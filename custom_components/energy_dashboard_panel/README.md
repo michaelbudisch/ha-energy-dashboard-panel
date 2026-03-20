@@ -99,3 +99,11 @@ Hinweis load_power:
 ## Sicherheit
 
 Nutze fuer Tokens immer `!secret` und committe keine echten API Keys.
+
+## Troubleshooting
+
+- Falls im Panel unerwartet `load_power: sensor.ems_home_total_power` erscheint:
+  - Home Assistant neu starten.
+  - Browser hart neu laden (`Strg+F5`).
+  - Sicherstellen, dass die aktuelle Version installiert ist.
+  - Ab `0.4.18` wird das Frontend per Versions-Query automatisch cache-gebustet und dieser Legacy-Default abgefangen.

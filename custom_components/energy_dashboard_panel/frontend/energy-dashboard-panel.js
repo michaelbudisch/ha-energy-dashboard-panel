@@ -22,6 +22,8 @@ const FALLBACK_PRICE_SENSORS = {
   level: null,
 };
 
+const LEGACY_LOAD_SENSOR_IDS = new Set(["sensor.ems_home_total_power"]);
+
 const FLOW_OPTION_DEFAULTS = {
   use_signed_battery_power: false,
   invert_battery_power_sign: false,
@@ -526,10 +528,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
   }
 
   _sensors() {
-    return {
+    const merged = {
       ...FALLBACK_SENSORS,
       ...(this._panelConfig().sensors || {}),
     };
+    const loadEntity = typeof merged.load_power === "string" ? merged.load_power.trim() : "";
+    if (loadEntity) {
+      const loadEntityKey = loadEntity.toLowerCase();
+      if (LEGACY_LOAD_SENSOR_IDS.has(loadEntityKey) && !this._stateObj(loadEntity)) {
+        merged.load_power = null;
+      }
+    }
+    return merged;
   }
 
   _priceSensors() {

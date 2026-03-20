@@ -213,7 +213,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             PANEL_STATIC_PATH, str(static_dir), cache_headers=False
         )
 
-    module_url = f"{PANEL_STATIC_PATH}/{PANEL_MODULE_FILE}"
+    module_file = static_dir / PANEL_MODULE_FILE
+    module_version = "0"
+    try:
+        module_version = str(int(module_file.stat().st_mtime))
+    except OSError:
+        module_version = "0"
+    module_url = f"{PANEL_STATIC_PATH}/{PANEL_MODULE_FILE}?v={module_version}"
     price_entity = None
     if conf.get(CONF_TIBBER_API_TOKEN):
         price_entity = ENTITY_TIBBER_API_PRICE
