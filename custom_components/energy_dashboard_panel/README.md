@@ -24,6 +24,7 @@ energy_dashboard_panel:
   sidebar_icon: "mdi:solar-power-variant"
   url_path: "energie-dashboard"
   require_admin: false
+  background_image: /energy_dashboard_panel_panel/dashboard.png?v=1
 
   # Wetter:
   # Option A: Open-Meteo (empfohlen)
@@ -54,6 +55,11 @@ energy_dashboard_panel:
       entity: sensor.wallbox_leistung
       accent: purple
 ```
+
+Hinweis Hintergrundbild:
+
+- Lege die Datei unter `custom_components/energy_dashboard_panel/frontend/` ab.
+- Nutze in der YAML den URL-Pfad `/energy_dashboard_panel_panel/<datei>?v=1`.
 
 ## Erzeugte Sensoren (Auszug)
 

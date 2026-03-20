@@ -43,6 +43,7 @@ energy_dashboard_panel:
   sidebar_icon: "mdi:solar-power-variant"
   url_path: "energie-dashboard"
   require_admin: false
+  background_image: /energy_dashboard_panel_panel/dashboard.png?v=1
 
   # Kostenloses Wetter (Open-Meteo)
   weather_location: "Berlin,DE"
@@ -59,6 +60,12 @@ energy_dashboard_panel:
     battery_power: sensor.batterie_leistung
     battery_soc: sensor.batterie_soc
 ```
+
+Hinweis zum Hintergrundbild:
+
+- Datei im Projekt: `custom_components/energy_dashboard_panel/frontend/dashboard.png`
+- Oeffentliche URL in der YAML: `/energy_dashboard_panel_panel/dashboard.png?v=1`
+- Bei Bildaenderung einfach die Versionszahl (`?v=2`, `?v=3`) erhoehen.
 
 ## GitHub: Repo erstellen und pushen
 
