@@ -100,6 +100,7 @@ const TREND_RANGES = {
   today: { key: "today", label: "Heute" },
   day24: { key: "day24", label: "24h" },
   week7: { key: "week7", label: "7 Tage" },
+  month: { key: "month", label: "Monat" },
   total: { key: "total", label: "Gesamt" },
 };
 
@@ -933,6 +934,26 @@ class HaEnergyDashboardPanel extends HTMLElement {
         startMs,
         endMs: now,
         stepMs: 60 * 60 * 1000,
+      };
+    }
+    if (this._trendRange === TREND_RANGES.month.key) {
+      const today = new Date();
+      const startMs = new Date(
+        today.getFullYear(),
+        today.getMonth(),
+        1,
+        0,
+        0,
+        0,
+        0
+      ).getTime();
+      const days = Math.max(1, (now - startMs) / (24 * 60 * 60 * 1000));
+      return {
+        key: TREND_RANGES.month.key,
+        label: `Monat ${String(today.getMonth() + 1).padStart(2, "0")}.${today.getFullYear()}`,
+        startMs,
+        endMs: now,
+        stepMs: days > 16 ? 60 * 60 * 1000 : 30 * 60 * 1000,
       };
     }
     if (this._trendRange === TREND_RANGES.total.key) {
@@ -1971,6 +1992,85 @@ class HaEnergyDashboardPanel extends HTMLElement {
     };
   }
 
+  _isLongTrendRange(windowCfg) {
+    if (!windowCfg?.key) {
+      return false;
+    }
+    return (
+      windowCfg.key === TREND_RANGES.week7.key ||
+      windowCfg.key === TREND_RANGES.month.key ||
+      windowCfg.key === TREND_RANGES.total.key
+    );
+  }
+
+  _historyChunkMs(windowCfg) {
+    if (windowCfg?.key === TREND_RANGES.total.key) {
+      return 7 * 24 * 60 * 60 * 1000;
+    }
+    if (windowCfg?.key === TREND_RANGES.month.key) {
+      return 24 * 60 * 60 * 1000;
+    }
+    if (windowCfg?.key === TREND_RANGES.week7.key) {
+      return 24 * 60 * 60 * 1000;
+    }
+    return null;
+  }
+
+  _historyPath({ startMs, endMs, entities, significantChangesOnly = false }) {
+    const params = new URLSearchParams({
+      filter_entity_id: entities.join(","),
+      end_time: new Date(endMs).toISOString(),
+      no_attributes: "1",
+      minimal_response: "1",
+      significant_changes_only: significantChangesOnly ? "1" : "0",
+    });
+    return `history/period/${new Date(startMs).toISOString()}?${params.toString()}`;
+  }
+
+  async _fetchHistoryWindow(entities, windowCfg) {
+    const longRange = this._isLongTrendRange(windowCfg);
+    const chunkMs = this._historyChunkMs(windowCfg);
+
+    if (!longRange || !chunkMs) {
+      const path = this._historyPath({
+        startMs: windowCfg.startMs,
+        endMs: windowCfg.endMs,
+        entities,
+        significantChangesOnly: false,
+      });
+      return this._hass.callApi("GET", path);
+    }
+
+    const history = [];
+    let successChunks = 0;
+    let lastError = null;
+
+    for (let cursor = windowCfg.startMs; cursor < windowCfg.endMs; cursor += chunkMs) {
+      const chunkStart = cursor;
+      const chunkEnd = Math.min(windowCfg.endMs, cursor + chunkMs);
+      const path = this._historyPath({
+        startMs: chunkStart,
+        endMs: chunkEnd,
+        entities,
+        significantChangesOnly: true,
+      });
+      try {
+        const part = await this._hass.callApi("GET", path);
+        if (Array.isArray(part)) {
+          history.push(...part);
+          successChunks += 1;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (successChunks === 0 && lastError) {
+      throw lastError;
+    }
+    return history;
+  }
+
   async _fetchTrendIfNeeded(sensors) {
     if (!this._hass?.callApi) {
       return;
@@ -2028,14 +2128,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._requestRender({ immediate: true, full: true });
 
     try {
-      const startIso = new Date(windowCfg.startMs).toISOString();
-      const params = new URLSearchParams({
-        filter_entity_id: uniqEntities.join(","),
-        no_attributes: "1",
-        significant_changes_only: "0",
-      });
-      const path = `history/period/${startIso}?${params.toString()}`;
-      const history = await this._hass.callApi("GET", path);
+      const history = await this._fetchHistoryWindow(uniqEntities, windowCfg);
       const series = this._historyToSeries(history);
       this._trendData = this._buildTrendData(
         series,
@@ -2046,6 +2139,30 @@ class HaEnergyDashboardPanel extends HTMLElement {
       );
       this._trendLastFetch = Date.now();
     } catch (error) {
+      // Fallback for installations with strict history response limits.
+      if (this._isLongTrendRange(windowCfg)) {
+        try {
+          const path = this._historyPath({
+            startMs: windowCfg.startMs,
+            endMs: windowCfg.endMs,
+            entities: uniqEntities,
+            significantChangesOnly: false,
+          });
+          const history = await this._hass.callApi("GET", path);
+          const series = this._historyToSeries(history);
+          this._trendData = this._buildTrendData(
+            series,
+            sensors,
+            windowCfg,
+            priceCfg,
+            signedGridEntityId
+          );
+          this._trendLastFetch = Date.now();
+          return;
+        } catch (fallbackError) {
+          // keep null state below
+        }
+      }
       this._trendData = null;
       this._trendLastFetch = Date.now();
     } finally {
@@ -3250,7 +3367,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const rangeToday = this._trendRange === TREND_RANGES.today.key;
     const range24h = this._trendRange === TREND_RANGES.day24.key;
     const range7d = this._trendRange === TREND_RANGES.week7.key;
+    const rangeMonth = this._trendRange === TREND_RANGES.month.key;
     const rangeTotal = this._trendRange === TREND_RANGES.total.key;
+    const monthSmart = rangeMonth ? trendSmartSavings : null;
+    const monthSolar = rangeMonth ? trendSavedSolar : null;
+    const monthNonGrid = rangeMonth ? trendSavedNonGrid : null;
+    const monthBattery = rangeMonth ? trendBatteryArbitrage : null;
+    const monthShiftKwh = rangeMonth ? trendBatteryArbitrageKwh : null;
+    const monthRenewable = rangeMonth ? trendRenewDay : null;
+    const monthAutarky = rangeMonth ? trendAutarkyDay : null;
     const themeDark = this._themeDark;
 
     const liveModel = {
@@ -4489,6 +4614,45 @@ class HaEnergyDashboardPanel extends HTMLElement {
           </div>
         </section>
 
+        <section class="stats kpi-strip block-month-report">
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:calendar-month"></ha-icon><span>Monat Smart</span></div>
+            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthSmart) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:white-balance-sunny"></ha-icon><span>Monat Solar</span></div>
+            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthSolar) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:transmission-tower-off"></ha-icon><span>Monat Nichtbezug</span></div>
+            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthNonGrid) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:battery-sync"></ha-icon><span>Monat Akku</span></div>
+            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthBattery) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:battery-clock"></ha-icon><span>Monat Shift</span></div>
+            <div class="v">${
+              rangeMonth && monthShiftKwh !== null ? `${monthShiftKwh.toFixed(2)} kWh` : "--"
+            }</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:home-percent"></ha-icon><span>Monat Autarkie Ø</span></div>
+            <div class="v">${rangeMonth ? this._formatPercent(monthAutarky) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:leaf"></ha-icon><span>Monat Erneuerbar</span></div>
+            <div class="v">${rangeMonth ? this._formatPercent(monthRenewable) : "--"}</div>
+          </div>
+          <div class="s">
+            <div class="k"><ha-icon icon="mdi:information-outline"></ha-icon><span>Monatsreport</span></div>
+            <div class="v">${
+              rangeMonth ? trendLabel : "Im Verlauf 'Monat' wählen"
+            }</div>
+          </div>
+        </section>
+
         <section class="stats kpi-strip block-lifetime-kpi">
           <div class="s">
             <div class="k"><ha-icon icon="mdi:cash-multiple"></ha-icon><span>Life Smart</span></div>
@@ -4527,6 +4691,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 <button class="range-btn ${rangeToday ? "active" : ""}" data-action="trend-range" data-range="today">Heute</button>
                 <button class="range-btn ${range24h ? "active" : ""}" data-action="trend-range" data-range="day24">24h</button>
                 <button class="range-btn ${range7d ? "active" : ""}" data-action="trend-range" data-range="week7">7 Tage</button>
+                <button class="range-btn ${rangeMonth ? "active" : ""}" data-action="trend-range" data-range="month">Monat</button>
                 <button class="range-btn ${rangeTotal ? "active" : ""}" data-action="trend-range" data-range="total">Gesamt</button>
               </div>
               <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>

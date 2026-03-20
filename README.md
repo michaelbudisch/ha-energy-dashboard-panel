@@ -7,7 +7,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Open-Meteo Wetter (kostenlos, nur Ort noetig)
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
 - Light/Dark Mode Umschalter direkt im Dashboard
-- Tagesverlauf + Sparstatistiken + Lifetime-Sensoren
+- Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
 
 ## Screenshots
 
