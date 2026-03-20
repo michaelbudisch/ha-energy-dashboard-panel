@@ -8,6 +8,12 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
 - Tagesverlauf + Sparstatistiken + Lifetime-Sensoren
 
+## Screenshots
+
+![Dashboard Screenshot 1](docs/images/dashboard-1.png)
+![Dashboard Screenshot 2](docs/images/dashboard-2.png)
+![Dashboard Screenshot 3](docs/images/dashboard-3.png)
+
 ## Projektstruktur
 
 ```text
