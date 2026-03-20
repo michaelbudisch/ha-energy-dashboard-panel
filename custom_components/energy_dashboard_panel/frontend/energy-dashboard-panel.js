@@ -127,6 +127,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendLoading = false;
     this._trendKey = null;
     this._trendLastFetch = 0;
+    this._trendCache = new Map();
     this._trendRange = TREND_RANGES.today.key;
     this._gridStatusState = "idle";
     this._renderFrame = 0;
@@ -242,6 +243,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._positions = null;
     this._trendData = null;
     this._trendKey = null;
+    this._trendCache.clear();
     this._lastHassSignature = "";
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
@@ -1021,6 +1023,27 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._requestRender({ immediate: true, full: true });
   }
 
+  _setTrendCache(key, data, ts = Date.now()) {
+    if (!key || !data) {
+      return;
+    }
+    this._trendCache.set(key, { data, ts });
+    if (this._trendCache.size <= 12) {
+      return;
+    }
+    let oldestKey = null;
+    let oldestTs = Number.POSITIVE_INFINITY;
+    this._trendCache.forEach((entry, entryKey) => {
+      if (entry?.ts < oldestTs) {
+        oldestTs = entry.ts;
+        oldestKey = entryKey;
+      }
+    });
+    if (oldestKey) {
+      this._trendCache.delete(oldestKey);
+    }
+  }
+
   _priceEntityId() {
     const cfg = this._panelConfig();
     const explicit = cfg.price_entity || cfg.price_fallback_entity || null;
@@ -1659,16 +1682,21 @@ class HaEnergyDashboardPanel extends HTMLElement {
       if (!Array.isArray(group) || group.length === 0) {
         continue;
       }
+      let groupEntityId = null;
       for (const row of group) {
-        const entityId = row.entity_id;
+        if (!row || typeof row !== "object") {
+          continue;
+        }
+        const entityId = row.entity_id || row.eid || groupEntityId;
         if (!entityId) {
           continue;
         }
+        groupEntityId = entityId;
         if (!map[entityId]) {
           map[entityId] = [];
         }
-        const tRaw = row.last_changed || row.last_updated;
-        const v = this._toNum(row.state);
+        const tRaw = row.last_changed || row.last_updated || row.lc || row.lu;
+        const v = this._toNum(row.state ?? row.s);
         const t = new Date(tRaw).getTime();
         if (!Number.isFinite(t) || v === null) {
           continue;
@@ -1678,6 +1706,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     for (const entityId of Object.keys(map)) {
       map[entityId].sort((a, b) => a.t - b.t);
+      const dedup = [];
+      for (const point of map[entityId]) {
+        const prev = dedup.length > 0 ? dedup[dedup.length - 1] : null;
+        if (prev && prev.t === point.t) {
+          prev.v = point.v;
+        } else {
+          dedup.push(point);
+        }
+      }
+      map[entityId] = dedup;
     }
     return map;
   }
@@ -2008,10 +2046,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return 7 * 24 * 60 * 60 * 1000;
     }
     if (windowCfg?.key === TREND_RANGES.month.key) {
-      return 24 * 60 * 60 * 1000;
+      return 3 * 24 * 60 * 60 * 1000;
     }
     if (windowCfg?.key === TREND_RANGES.week7.key) {
-      return 24 * 60 * 60 * 1000;
+      return 2 * 24 * 60 * 60 * 1000;
     }
     return null;
   }
@@ -2041,32 +2079,59 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return this._hass.callApi("GET", path);
     }
 
-    const history = [];
+    const chunkRanges = [];
+    for (let cursor = windowCfg.startMs; cursor < windowCfg.endMs; cursor += chunkMs) {
+      chunkRanges.push({
+        chunkStart: cursor,
+        chunkEnd: Math.min(windowCfg.endMs, cursor + chunkMs),
+      });
+    }
+    if (chunkRanges.length === 0) {
+      return [];
+    }
+
+    const parts = new Array(chunkRanges.length);
     let successChunks = 0;
     let lastError = null;
+    let nextIndex = 0;
+    const workerCount = Math.min(4, chunkRanges.length);
 
-    for (let cursor = windowCfg.startMs; cursor < windowCfg.endMs; cursor += chunkMs) {
-      const chunkStart = cursor;
-      const chunkEnd = Math.min(windowCfg.endMs, cursor + chunkMs);
-      const path = this._historyPath({
-        startMs: chunkStart,
-        endMs: chunkEnd,
-        entities,
-        significantChangesOnly: true,
-      });
-      try {
-        const part = await this._hass.callApi("GET", path);
-        if (Array.isArray(part)) {
-          history.push(...part);
-          successChunks += 1;
+    const runWorker = async () => {
+      while (nextIndex < chunkRanges.length) {
+        const idx = nextIndex;
+        nextIndex += 1;
+        const range = chunkRanges[idx];
+        const path = this._historyPath({
+          startMs: range.chunkStart,
+          endMs: range.chunkEnd,
+          entities,
+          significantChangesOnly: true,
+        });
+        try {
+          const part = await this._hass.callApi("GET", path);
+          if (Array.isArray(part)) {
+            parts[idx] = part;
+            successChunks += 1;
+          } else {
+            parts[idx] = [];
+          }
+        } catch (error) {
+          parts[idx] = [];
+          lastError = error;
         }
-      } catch (error) {
-        lastError = error;
       }
-    }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
 
     if (successChunks === 0 && lastError) {
       throw lastError;
+    }
+    const history = [];
+    for (const part of parts) {
+      if (Array.isArray(part)) {
+        history.push(...part);
+      }
     }
     return history;
   }
@@ -2082,6 +2147,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const signedGridEntityId = signedGridSource.entityId;
     const key = this._buildTrendKey(sensors, windowCfg, priceCfg, signedGridEntityId);
     const now = Date.now();
+
+    const cached = this._trendCache.get(key);
+    if (cached?.data && now - (cached.ts || 0) < 20 * 60 * 1000) {
+      this._trendKey = key;
+      this._trendData = cached.data;
+      this._trendLastFetch = cached.ts || now;
+      return;
+    }
+
     if (this._trendLoading) {
       return;
     }
@@ -2138,6 +2212,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         signedGridEntityId
       );
       this._trendLastFetch = Date.now();
+      this._setTrendCache(key, this._trendData, this._trendLastFetch);
     } catch (error) {
       // Fallback for installations with strict history response limits.
       if (this._isLongTrendRange(windowCfg)) {
@@ -2158,6 +2233,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             signedGridEntityId
           );
           this._trendLastFetch = Date.now();
+          this._setTrendCache(key, this._trendData, this._trendLastFetch);
           return;
         } catch (fallbackError) {
           // keep null state below
@@ -3369,13 +3445,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const range7d = this._trendRange === TREND_RANGES.week7.key;
     const rangeMonth = this._trendRange === TREND_RANGES.month.key;
     const rangeTotal = this._trendRange === TREND_RANGES.total.key;
-    const monthSmart = rangeMonth ? trendSmartSavings : null;
-    const monthSolar = rangeMonth ? trendSavedSolar : null;
-    const monthNonGrid = rangeMonth ? trendSavedNonGrid : null;
-    const monthBattery = rangeMonth ? trendBatteryArbitrage : null;
-    const monthShiftKwh = rangeMonth ? trendBatteryArbitrageKwh : null;
-    const monthRenewable = rangeMonth ? trendRenewDay : null;
-    const monthAutarky = rangeMonth ? trendAutarkyDay : null;
     const themeDark = this._themeDark;
 
     const liveModel = {
@@ -4569,15 +4638,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         <section class="stats kpi-strip block-day-kpi">
           <div class="s">
-            <div class="k"><ha-icon icon="mdi:leaf"></ha-icon><span>Tag erneuerbar</span></div>
+            <div class="k"><ha-icon icon="mdi:leaf"></ha-icon><span>Erneuerbar</span></div>
             <div class="v">${this._formatPercent(trendRenewDay)}</div>
           </div>
           <div class="s">
-            <div class="k"><ha-icon icon="mdi:home-percent"></ha-icon><span>Tag Autarkie Ø</span></div>
+            <div class="k"><ha-icon icon="mdi:home-percent"></ha-icon><span>Autarkie Ø</span></div>
             <div class="v">${this._formatPercent(trendAutarkyDay)}</div>
           </div>
           <div class="s">
-            <div class="k"><ha-icon icon="mdi:cash-plus"></ha-icon><span>Tag Smart</span></div>
+            <div class="k"><ha-icon icon="mdi:cash-plus"></ha-icon><span>Smart</span></div>
             <div class="v">${this._formatMoneyWithCent(trendSmartSavings)}</div>
           </div>
         </section>
@@ -4611,45 +4680,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <div class="s">
             <div class="k"><ha-icon icon="mdi:clock-outline"></ha-icon><span>Zeitraum</span></div>
             <div class="v">${trendLabel}</div>
-          </div>
-        </section>
-
-        <section class="stats kpi-strip block-month-report">
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:calendar-month"></ha-icon><span>Monat Smart</span></div>
-            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthSmart) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:white-balance-sunny"></ha-icon><span>Monat Solar</span></div>
-            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthSolar) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:transmission-tower-off"></ha-icon><span>Monat Nichtbezug</span></div>
-            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthNonGrid) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:battery-sync"></ha-icon><span>Monat Akku</span></div>
-            <div class="v">${rangeMonth ? this._formatMoneyWithCent(monthBattery) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:battery-clock"></ha-icon><span>Monat Shift</span></div>
-            <div class="v">${
-              rangeMonth && monthShiftKwh !== null ? `${monthShiftKwh.toFixed(2)} kWh` : "--"
-            }</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:home-percent"></ha-icon><span>Monat Autarkie Ø</span></div>
-            <div class="v">${rangeMonth ? this._formatPercent(monthAutarky) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:leaf"></ha-icon><span>Monat Erneuerbar</span></div>
-            <div class="v">${rangeMonth ? this._formatPercent(monthRenewable) : "--"}</div>
-          </div>
-          <div class="s">
-            <div class="k"><ha-icon icon="mdi:information-outline"></ha-icon><span>Monatsreport</span></div>
-            <div class="v">${
-              rangeMonth ? trendLabel : "Im Verlauf 'Monat' wählen"
-            }</div>
           </div>
         </section>
 
