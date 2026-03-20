@@ -147,6 +147,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._windowResizeFrame = 0;
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
+    this._themeLoaded = false;
+    this._themeDark = false;
     this._hasRenderedTemplate = false;
     this._pendingFullRender = true;
     this.attachShadow({ mode: "open" });
@@ -241,6 +243,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._lastHassSignature = "";
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
+    this._themeLoaded = false;
     this._hasRenderedTemplate = false;
     this._requestRender({ immediate: true, full: true });
   }
@@ -340,6 +343,46 @@ class HaEnergyDashboardPanel extends HTMLElement {
   _storageKey() {
     const path = this._panel?.url_path || this._panel?.path || "default";
     return `energy_dashboard_panel_layout::${path}`;
+  }
+
+  _themeStorageKey() {
+    const path = this._panel?.url_path || this._panel?.path || "default";
+    return `energy_dashboard_panel_theme::${path}`;
+  }
+
+  _ensureThemePreference() {
+    if (this._themeLoaded) {
+      return;
+    }
+    let theme = "light";
+    try {
+      const raw = window.localStorage.getItem(this._themeStorageKey());
+      if (raw === "dark" || raw === "light") {
+        theme = raw;
+      }
+    } catch (error) {
+      // Ignore storage failures.
+    }
+    this._themeDark = theme === "dark";
+    this._themeLoaded = true;
+  }
+
+  _saveThemePreference() {
+    try {
+      window.localStorage.setItem(this._themeStorageKey(), this._themeDark ? "dark" : "light");
+    } catch (error) {
+      // Ignore storage failures.
+    }
+  }
+
+  _setThemeDark(enabled) {
+    const next = Boolean(enabled);
+    if (this._themeDark === next) {
+      return;
+    }
+    this._themeDark = next;
+    this._saveThemePreference();
+    this._requestRender({ immediate: true, full: true });
   }
 
   _clamp(value, min, max) {
@@ -2951,6 +2994,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
   _bindInteractions() {
     const toggleBtn = this.shadowRoot.querySelector("[data-action='toggle-edit']");
     const resetBtn = this.shadowRoot.querySelector("[data-action='reset-layout']");
+    const themeToggle = this.shadowRoot.querySelector("[data-action='toggle-theme']");
 
     toggleBtn?.addEventListener("click", () => {
       this._editMode = !this._editMode;
@@ -2962,6 +3006,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     resetBtn?.addEventListener("click", () => {
       this._resetPositions();
+    });
+
+    themeToggle?.addEventListener("change", (ev) => {
+      this._setThemeDark(Boolean(ev?.target?.checked));
     });
 
     this.shadowRoot.querySelectorAll("[data-action='trend-range']").forEach((btn) => {
@@ -3047,6 +3095,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
 
     this._ensurePositions();
+    this._ensureThemePreference();
 
     const cfg = this._panelConfig();
     const sensors = this._sensors();
@@ -3134,6 +3183,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const range24h = this._trendRange === TREND_RANGES.day24.key;
     const range7d = this._trendRange === TREND_RANGES.week7.key;
     const rangeTotal = this._trendRange === TREND_RANGES.total.key;
+    const themeDark = this._themeDark;
 
     const liveModel = {
       weather,
@@ -3164,11 +3214,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return;
     }
 
+    const sceneImageUrl = bgImage ? String(bgImage).replace(/'/g, "\\'") : "";
     const sceneBackground = bgImage
-      ? `linear-gradient(180deg, rgba(13, 27, 44, 0.08), rgba(13, 27, 44, 0.22)), url('${String(
-          bgImage
-        ).replace(/'/g, "\\'")}') center/cover no-repeat, linear-gradient(165deg, #edf7ff 0%, #dfeaf5 55%, #d3dde7 100%)`
-      : "linear-gradient(165deg, #edf7ff 0%, #dfeaf5 55%, #d3dde7 100%)";
+      ? themeDark
+        ? `linear-gradient(180deg, rgba(3, 9, 17, 0.46), rgba(3, 9, 17, 0.68)), url('${sceneImageUrl}') center/cover no-repeat, linear-gradient(165deg, #162131 0%, #121c2a 55%, #0d1723 100%)`
+        : `linear-gradient(180deg, rgba(13, 27, 44, 0.08), rgba(13, 27, 44, 0.22)), url('${sceneImageUrl}') center/cover no-repeat, linear-gradient(165deg, #edf7ff 0%, #dfeaf5 55%, #d3dde7 100%)`
+      : themeDark
+        ? "linear-gradient(165deg, #162131 0%, #121c2a 55%, #0d1723 100%)"
+        : "linear-gradient(165deg, #edf7ff 0%, #dfeaf5 55%, #d3dde7 100%)";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -3198,6 +3251,92 @@ class HaEnergyDashboardPanel extends HTMLElement {
           position: relative;
           isolation: isolate;
           display: block;
+        }
+
+        .panel.theme-dark {
+          --ed-bg:
+            radial-gradient(circle at 14% -8%, rgba(76, 98, 120, 0.24) 0 26%, rgba(10, 18, 29, 0) 27%),
+            linear-gradient(180deg, #162232 0%, #121c2a 55%, #0d1621 100%);
+          --ed-text: #e7f1fa;
+          --ed-muted: #9eb4c8;
+          --ed-card: rgba(19, 29, 43, 0.76);
+          --ed-border: rgba(149, 171, 193, 0.22);
+          --ed-shadow: 0 16px 36px rgba(0, 0, 0, 0.38);
+          --ed-chip-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+          --ed-action: #27bca4;
+        }
+
+        .panel.theme-dark .weather {
+          background: linear-gradient(180deg, rgba(24, 36, 52, 0.92), rgba(17, 27, 40, 0.84));
+          border-color: rgba(152, 174, 196, 0.26);
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.33);
+        }
+
+        .panel.theme-dark .scene-wrap,
+        .panel.theme-dark .card,
+        .panel.theme-dark .stats,
+        .panel.theme-dark .trend-wrap,
+        .panel.theme-dark .source-wrap,
+        .panel.theme-dark .price-wrap,
+        .panel.theme-dark details.map {
+          border-color: rgba(149, 171, 193, 0.22);
+          background: linear-gradient(180deg, rgba(21, 31, 46, 0.86), rgba(15, 24, 36, 0.78));
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+        }
+
+        .panel.theme-dark .stats .s {
+          border-right-color: rgba(151, 173, 195, 0.14);
+        }
+
+        .panel.theme-dark .btn {
+          border-color: rgba(147, 169, 189, 0.26);
+          background: rgba(26, 38, 53, 0.9);
+          color: #dceaf7;
+        }
+
+        .panel.theme-dark .btn.primary {
+          border-color: rgba(27, 178, 149, 0.42);
+          background: linear-gradient(180deg, rgba(24, 109, 97, 0.78), rgba(17, 84, 76, 0.82));
+          color: #d8fff8;
+        }
+
+        .panel.theme-dark .btn.ghost {
+          background: rgba(26, 38, 53, 0.72);
+        }
+
+        .panel.theme-dark .trend-controls {
+          background: rgba(24, 37, 52, 0.9);
+          border-color: rgba(149, 171, 193, 0.24);
+        }
+
+        .panel.theme-dark .range-btn {
+          color: #9eb4c8;
+        }
+
+        .panel.theme-dark .price-badge {
+          border-color: rgba(151, 173, 194, 0.24);
+          background: rgba(24, 37, 52, 0.9);
+          color: #a8bdd1;
+        }
+
+        .panel.theme-dark .source-track {
+          background: rgba(149, 171, 193, 0.2);
+        }
+
+        .panel.theme-dark .scene {
+          border-color: rgba(149, 171, 193, 0.26);
+        }
+
+        .panel.theme-dark .scene::before {
+          background:
+            radial-gradient(circle at 18% 10%, rgba(255,255,255,0.16) 0 36px, transparent 37px),
+            radial-gradient(circle at 30% 9%, rgba(255,255,255,0.1) 0 28px, transparent 29px);
+        }
+
+        .panel.theme-dark .warning {
+          border-color: rgba(242, 155, 56, 0.34);
+          background: linear-gradient(180deg, rgba(102, 58, 22, 0.46), rgba(89, 47, 16, 0.36));
+          color: #ffd9bf;
         }
 
         .panel.wide {
@@ -3338,6 +3477,68 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .actions {
           display: flex;
           gap: 6px;
+          align-items: center;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+
+        .theme-switch {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          border-radius: 999px;
+          padding: 4px 8px;
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          background: rgba(255, 255, 255, 0.78);
+          color: #4d6274;
+          font-size: 0.64rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
+          user-select: none;
+          cursor: pointer;
+        }
+
+        .theme-switch input {
+          position: absolute;
+          opacity: 0;
+          pointer-events: none;
+        }
+
+        .theme-switch .track {
+          width: 34px;
+          height: 18px;
+          border-radius: 999px;
+          background: rgba(133, 151, 168, 0.55);
+          position: relative;
+          transition: background 120ms ease;
+          flex-shrink: 0;
+        }
+
+        .theme-switch .thumb {
+          position: absolute;
+          top: 2px;
+          left: 2px;
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          background: #ffffff;
+          box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+          transition: transform 120ms ease;
+        }
+
+        .theme-switch input:checked + .track {
+          background: rgba(31, 180, 150, 0.92);
+        }
+
+        .theme-switch input:checked + .track .thumb {
+          transform: translateX(16px);
+        }
+
+        .panel.theme-dark .theme-switch {
+          border-color: rgba(149, 171, 193, 0.24);
+          background: rgba(24, 37, 52, 0.9);
+          color: #b3c7da;
         }
 
         .btn {
@@ -3971,7 +4172,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
       </style>
 
-      <div class="panel ${layoutClass}">
+      <div class="panel ${layoutClass} ${themeDark ? "theme-dark" : "theme-light"}">
         <header class="topbar">
           <div class="weather">
             <ha-icon data-bind="weather-icon" icon="${weather.icon}"></ha-icon>
@@ -3986,6 +4187,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <div class="scene-toolbar">
             <div class="scene-title">Visual Layer</div>
             <div class="actions">
+              <label class="theme-switch" title="Dark Mode">
+                <input type="checkbox" data-action="toggle-theme" ${themeDark ? "checked" : ""}>
+                <span class="track"><span class="thumb"></span></span>
+                <span>Dark</span>
+              </label>
               <button class="btn ${this._editMode ? "primary" : "ghost"}" data-action="toggle-edit">
                 ${this._editMode ? "Fertig" : "Layout bearbeiten"}
               </button>

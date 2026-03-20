@@ -8,6 +8,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Sensor-Mapping fuer signed oder dual (Import/Export, Laden/Entladen)
 - Tibber Preisdaten direkt per API Token
 - Wetter-Badge via `weather_entity` oder kostenlos per `weather_location` (Open-Meteo)
+- Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf, Sparverlauf und Lifetime-Sensoren
 
 ## Installation

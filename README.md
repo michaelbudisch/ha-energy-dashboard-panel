@@ -6,6 +6,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Tibber Preislogik direkt per API Token
 - Open-Meteo Wetter (kostenlos, nur Ort noetig)
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
+- Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf + Sparstatistiken + Lifetime-Sensoren
 
 ## Screenshots
