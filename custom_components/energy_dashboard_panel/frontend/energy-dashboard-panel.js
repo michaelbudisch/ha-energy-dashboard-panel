@@ -131,6 +131,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendLastFetch = 0;
     this._trendCache = new Map();
     this._trendRange = TREND_RANGES.today.key;
+    this._trendHoverIndex = null;
+    this._savingsHoverIndex = null;
     this._gridStatusState = "idle";
     this._renderFrame = 0;
     this._renderTimeout = 0;
@@ -246,6 +248,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendData = null;
     this._trendKey = null;
     this._trendCache.clear();
+    this._trendHoverIndex = null;
+    this._savingsHoverIndex = null;
     this._lastHassSignature = "";
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
@@ -340,6 +344,125 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._chartResizeObserver = new ResizeObserver(() => this._scheduleChartRedraw());
     this._chartResizeObserver.observe(trend);
     this._chartResizeObserver.observe(savings);
+  }
+
+  _hoverIndexFromPointer(event, canvas, pad, pointCount) {
+    if (!event || !canvas || !Number.isFinite(pointCount) || pointCount < 2) {
+      return null;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const cssWidth = canvas.clientWidth || rect.width || 0;
+    const innerWidth = cssWidth - pad.left - pad.right;
+    if (!Number.isFinite(innerWidth) || innerWidth <= 0) {
+      return null;
+    }
+    const x = event.clientX - rect.left;
+    if (!Number.isFinite(x) || x < pad.left || x > pad.left + innerWidth) {
+      return null;
+    }
+    const ratio = this._clamp((x - pad.left) / innerWidth, 0, 1);
+    return this._clamp(Math.round(ratio * (pointCount - 1)), 0, pointCount - 1);
+  }
+
+  _bindChartHoverHandlers() {
+    const bindOne = (canvas, type, pad) => {
+      if (!canvas || canvas.dataset.hoverBound === "1") {
+        return;
+      }
+      canvas.dataset.hoverBound = "1";
+      canvas.style.cursor = "crosshair";
+
+      canvas.addEventListener("pointermove", (event) => {
+        const livePoints = this._trendData?.points;
+        const liveCount = Array.isArray(livePoints) ? livePoints.length : 0;
+        const idx = this._hoverIndexFromPointer(event, canvas, pad, liveCount);
+        if (type === "trend") {
+          if (this._trendHoverIndex !== idx) {
+            this._trendHoverIndex = idx;
+            this._scheduleChartRedraw();
+          }
+        } else if (this._savingsHoverIndex !== idx) {
+          this._savingsHoverIndex = idx;
+          this._scheduleChartRedraw();
+        }
+      });
+
+      canvas.addEventListener("pointerleave", () => {
+        if (type === "trend") {
+          if (this._trendHoverIndex !== null) {
+            this._trendHoverIndex = null;
+            this._scheduleChartRedraw();
+          }
+        } else if (this._savingsHoverIndex !== null) {
+          this._savingsHoverIndex = null;
+          this._scheduleChartRedraw();
+        }
+      });
+    };
+
+    bindOne(this.shadowRoot?.querySelector("#trend-canvas"), "trend", {
+      left: 44,
+      right: 38,
+    });
+    bindOne(this.shadowRoot?.querySelector("#savings-canvas"), "savings", {
+      left: 56,
+      right: 56,
+    });
+  }
+
+  _drawCanvasTooltip(ctx, lines, x, y, cssWidth, cssHeight) {
+    if (!ctx || !Array.isArray(lines) || lines.length === 0) {
+      return;
+    }
+    ctx.save();
+    ctx.font = "11px Sora, Segoe UI, sans-serif";
+    const lineHeight = 15;
+    const padX = 8;
+    const padY = 6;
+    let maxWidth = 0;
+    lines.forEach((line) => {
+      const width = ctx.measureText(String(line || "")).width;
+      if (width > maxWidth) {
+        maxWidth = width;
+      }
+    });
+    const boxW = Math.ceil(maxWidth + padX * 2);
+    const boxH = Math.ceil(lines.length * lineHeight + padY * 2);
+    const margin = 10;
+    let boxX = x + 12;
+    let boxY = y - boxH - 10;
+    if (boxX + boxW > cssWidth - margin) {
+      boxX = x - boxW - 12;
+    }
+    if (boxX < margin) {
+      boxX = margin;
+    }
+    if (boxY < margin) {
+      boxY = y + 12;
+    }
+    if (boxY + boxH > cssHeight - margin) {
+      boxY = cssHeight - boxH - margin;
+    }
+
+    const dark = Boolean(this._themeDark);
+    ctx.fillStyle = dark ? "rgba(16, 25, 39, 0.94)" : "rgba(255, 255, 255, 0.95)";
+    ctx.strokeStyle = dark ? "rgba(162, 185, 208, 0.32)" : "rgba(42, 63, 82, 0.24)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(boxX, boxY, boxW, boxH, 8);
+    } else {
+      ctx.rect(boxX, boxY, boxW, boxH);
+    }
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = dark ? "#edf5ff" : "#183041";
+    ctx.textAlign = "left";
+    lines.forEach((line, idx) => {
+      ctx.fillText(String(line || ""), boxX + padX, boxY + padY + 12 + idx * lineHeight);
+    });
+    ctx.restore();
   }
 
   _panelConfig() {
@@ -1030,6 +1153,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendRange = rangeKey;
     this._trendKey = null;
     this._trendData = null;
+    this._trendHoverIndex = null;
+    this._savingsHoverIndex = null;
     this._requestRender({ immediate: true, full: true });
   }
 
@@ -2372,6 +2497,62 @@ class HaEnergyDashboardPanel extends HTMLElement {
     drawPowerLine("load", "#f29b38", 2.4);
     drawPowerLine("renewable", "#25b788", 2.2);
     drawPctLine("autarky", "#2b78d7");
+
+    const hoverIdx = this._trendHoverIndex;
+    if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < data.points.length) {
+      const point = data.points[hoverIdx] || null;
+      if (point) {
+        const x = xAt(hoverIdx, data.points.length);
+        ctx.strokeStyle = this._themeDark ? "rgba(164, 188, 214, 0.48)" : "rgba(39, 58, 77, 0.42)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const markerY = [];
+        const drawMarker = (val, yFn, color) => {
+          if (val === null || val === undefined) {
+            return;
+          }
+          const y = yFn(val);
+          markerY.push(y);
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = this._themeDark ? "rgba(22, 33, 48, 0.9)" : "rgba(255, 255, 255, 0.9)";
+          ctx.stroke();
+        };
+
+        drawMarker(point.load, yPower, "#f29b38");
+        drawMarker(point.renewable, yPower, "#25b788");
+        drawMarker(point.autarky, yPct, "#2b78d7");
+
+        const lines = [`Zeit: ${this._formatTime(point.t)}`];
+        if (point.load !== null && point.load !== undefined) {
+          lines.push(`Gesamtlast: ${this._formatPower(point.load)}`);
+        }
+        if (point.renewable !== null && point.renewable !== undefined) {
+          lines.push(`Erneuerbar: ${this._formatPower(point.renewable)}`);
+        }
+        if (point.autarky !== null && point.autarky !== undefined) {
+          lines.push(`Autarkie: ${this._formatPercent(point.autarky)}`);
+        }
+
+        this._drawCanvasTooltip(
+          ctx,
+          lines,
+          x,
+          markerY.length > 0 ? Math.min(...markerY) : pad.top + 20,
+          cssWidth,
+          cssHeight
+        );
+      }
+    }
   }
 
   _drawSavingsChart() {
@@ -2489,6 +2670,62 @@ class HaEnergyDashboardPanel extends HTMLElement {
     drawLine("saveSolarEur", yStep, "#25b788", 2.1);
     drawLine("saveArbitrageEur", yStep, "#d1782e", 2.1);
     drawLine("saveSmartCumEur", yCum, "#2b78d7", 2.6);
+
+    const hoverIdx = this._savingsHoverIndex;
+    if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < data.points.length) {
+      const point = data.points[hoverIdx] || null;
+      if (point) {
+        const x = xAt(hoverIdx, data.points.length);
+        ctx.strokeStyle = this._themeDark ? "rgba(164, 188, 214, 0.48)" : "rgba(39, 58, 77, 0.42)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        const markerY = [];
+        const drawMarker = (val, yFn, color) => {
+          if (val === null || val === undefined) {
+            return;
+          }
+          const y = yFn(val);
+          markerY.push(y);
+          ctx.beginPath();
+          ctx.fillStyle = color;
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = this._themeDark ? "rgba(22, 33, 48, 0.9)" : "rgba(255, 255, 255, 0.9)";
+          ctx.stroke();
+        };
+
+        drawMarker(point.saveSolarEur, yStep, "#25b788");
+        drawMarker(point.saveArbitrageEur, yStep, "#d1782e");
+        drawMarker(point.saveSmartCumEur, yCum, "#2b78d7");
+
+        const lines = [`Zeit: ${this._formatTime(point.t)}`];
+        if (point.saveSolarEur !== null && point.saveSolarEur !== undefined) {
+          lines.push(`Solar (Intervall): ${this._formatMoneyWithCent(point.saveSolarEur)}`);
+        }
+        if (point.saveArbitrageEur !== null && point.saveArbitrageEur !== undefined) {
+          lines.push(`Akku (Intervall): ${this._formatMoneyWithCent(point.saveArbitrageEur)}`);
+        }
+        if (point.saveSmartCumEur !== null && point.saveSmartCumEur !== undefined) {
+          lines.push(`Smart kumuliert: ${this._formatMoneyWithCent(point.saveSmartCumEur)}`);
+        }
+
+        this._drawCanvasTooltip(
+          ctx,
+          lines,
+          x,
+          markerY.length > 0 ? Math.min(...markerY) : pad.top + 20,
+          cssWidth,
+          cssHeight
+        );
+      }
+    }
   }
 
   _weatherEntityId() {
@@ -4847,6 +5084,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._bindInteractions();
     this._syncFlowCanvas(sceneCables);
     this._bindChartResizeObserver();
+    this._bindChartHoverHandlers();
     requestAnimationFrame(() => {
       this._drawTrendChart();
       this._drawSavingsChart();

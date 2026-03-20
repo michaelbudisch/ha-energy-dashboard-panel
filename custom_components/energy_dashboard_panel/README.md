@@ -10,6 +10,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Wetter-Badge via `weather_entity` oder kostenlos per `weather_location` (Open-Meteo)
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf, Sparverlauf, Monatsreport (Monat-Tab) und Lifetime-Sensoren
+- Hover-Tooltips in den Charts (Maus ueber Diagramm zeigt Einzelwerte)
 
 ## Installation
 

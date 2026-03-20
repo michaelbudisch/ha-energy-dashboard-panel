@@ -8,6 +8,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
+- Hover-Tooltips in den Charts (Maus ueber Diagramm = Live-Werte je Punkt)
 
 ## Screenshots
 
