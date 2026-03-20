@@ -1355,31 +1355,32 @@ class HaEnergyDashboardPanel extends HTMLElement {
       };
     }
 
+    // Auto mode prefers the signed two-way meter sensor when available.
+    if (signed !== null) {
+      return {
+        mode: "signed_auto",
+        signed,
+        importPower: Math.max(0, signed),
+        exportPower: Math.max(0, -signed),
+      };
+    }
+
     if (hasDual) {
       const importPower = Math.max(0, importRaw ?? 0);
       const exportPower = Math.max(0, exportRaw ?? 0);
       return {
-        mode: "dual_auto",
+        mode: "dual_auto_fallback",
         signed: importPower - exportPower,
         importPower,
         exportPower,
       };
     }
 
-    if (signed === null) {
-      return {
-        mode: "none",
-        signed: null,
-        importPower: null,
-        exportPower: null,
-      };
-    }
-
     return {
-      mode: "signed",
-      signed,
-      importPower: Math.max(0, signed),
-      exportPower: Math.max(0, -signed),
+      mode: "none",
+      signed: null,
+      importPower: null,
+      exportPower: null,
     };
   }
 
@@ -1582,6 +1583,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const stepMs = windowCfg.stepMs;
     const stepHours = stepMs / (60 * 60 * 1000);
     const flowOpts = this._flowOptions();
+    const gridMode = this._normalizeSensorMode(flowOpts.gridSensorMode);
 
     const solarSeries = seriesMap[sensors.solar_power] || [];
     const loadSeries = seriesMap[sensors.load_power] || [];
@@ -1672,11 +1674,17 @@ class HaEnergyDashboardPanel extends HTMLElement {
           : Math.max(0, flowOpts.invertLoadPowerSign ? -loadRaw : loadRaw);
 
       const hasDual = importDual !== null || exportDual !== null;
-      const gridImport = hasDual
-        ? Math.max(0, importDual ?? 0)
-        : signed === null
-          ? null
-          : Math.max(0, signed);
+      let gridImport = null;
+      if (gridMode === "dual") {
+        gridImport = hasDual ? Math.max(0, importDual ?? 0) : null;
+      } else if (gridMode === "signed") {
+        gridImport = signed === null ? null : Math.max(0, signed);
+      } else if (signed !== null) {
+        // Auto mode prefers signed two-way meter sensor.
+        gridImport = Math.max(0, signed);
+      } else {
+        gridImport = hasDual ? Math.max(0, importDual ?? 0) : null;
+      }
 
       const point = {
         t,
@@ -2221,6 +2229,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const gridMode = this._normalizeSensorMode(flowOpts.gridSensorMode);
     const batteryMode = this._normalizeSensorMode(flowOpts.batterySensorMode);
     const hasGridDual = Boolean(sensorMap.grid_import_power || sensorMap.grid_export_power);
+    const signedGridAvailable = Boolean(
+      sensorMap.grid_power && this._stateObj(sensorMap.grid_power)
+    );
     const hasBatteryDual = Boolean(
       sensorMap.battery_charge_power || sensorMap.battery_discharge_power
     );
@@ -2245,7 +2256,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
           return false;
         }
 
-        if (gridMode === "auto" && hasGridDual && key === "grid_power") {
+        if (
+          gridMode === "auto" &&
+          signedGridAvailable &&
+          (key === "grid_import_power" || key === "grid_export_power")
+        ) {
+          return false;
+        }
+        if (gridMode === "auto" && !signedGridAvailable && hasGridDual && key === "grid_power") {
           return false;
         }
         if (batteryMode === "auto" && !useSignedBattery && hasBatteryDual && key === "battery_power") {

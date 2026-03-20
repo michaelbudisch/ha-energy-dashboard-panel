@@ -900,15 +900,16 @@ class _LifetimeAccumulator:
                 return None, None, None
             return max(0.0, signed), max(0.0, -signed), signed
 
+        # Auto mode prefers the signed two-way meter sensor when available.
+        if signed is not None:
+            return max(0.0, signed), max(0.0, -signed), signed
+
         if has_dual:
             import_power = max(0.0, import_raw or 0.0)
             export_power = max(0.0, export_raw or 0.0)
             return import_power, export_power, import_power - export_power
 
-        if signed is None:
-            return None, None, None
-
-        return max(0.0, signed), max(0.0, -signed), signed
+        return None, None, None
 
     def _resolve_battery(self) -> tuple[float | None, float | None, float | None]:
         """Resolve battery flow from dual or signed sensors."""

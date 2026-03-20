@@ -55,6 +55,9 @@ energy_dashboard_panel:
   sensors:
     solar_power: sensor.pv_gesamtleistung
     load_power: sensor.hausverbrauch_watt
+    # Lokaler Zwei-Wege-Zaehler (bevorzugt in grid_sensor_mode: auto)
+    grid_power: sensor.zaehler_zweiwege_leistung
+    # Optional als Fallback:
     grid_import_power: sensor.netzbezug_w
     grid_export_power: sensor.netzeinspeisung_w
     battery_power: sensor.batterie_leistung
@@ -66,6 +69,11 @@ Hinweis zum Hintergrundbild:
 - Datei im Projekt: `custom_components/energy_dashboard_panel/frontend/dashboard.png`
 - Oeffentliche URL in der YAML: `/energy_dashboard_panel_panel/dashboard.png?v=1`
 - Bei Bildaenderung einfach die Versionszahl (`?v=2`, `?v=3`) erhoehen.
+
+Hinweis Netzsensoren:
+
+- In `grid_sensor_mode: auto` wird `sensors.grid_power` (Zwei-Wege, signed) jetzt bevorzugt.
+- `grid_import_power`/`grid_export_power` bleiben als Fallback nutzbar.
 
 ## GitHub: Repo erstellen und pushen
 
