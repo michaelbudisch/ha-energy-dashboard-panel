@@ -71,7 +71,10 @@ Hinweis Hintergrundbild:
 Hinweis Netzsensoren:
 
 - In `grid_sensor_mode: auto` wird `grid_power` (Zwei-Wege-Sensor) bevorzugt.
-- `grid_import_power` und `grid_export_power` dienen als Fallback.
+- Wenn `grid_power` fehlt oder keine Zahl liefert, nutzt das Panel automatisch
+  `sensor.energy_dashboard_panel_tibber_grid_power` als Live-Fallback
+  (wenn `tibber_api_token` gesetzt ist und Tibber-Livewerte verfügbar sind).
+- `grid_import_power` und `grid_export_power` dienen zusätzlich als Fallback.
 
 Hinweis load_power:
 
@@ -84,6 +87,7 @@ Hinweis load_power:
 ## Erzeugte Sensoren (Auszug)
 
 - `sensor.energy_dashboard_panel_tibber_price` (wenn `tibber_api_token` gesetzt)
+- `sensor.energy_dashboard_panel_tibber_grid_power` (Live-Netzleistung, signed, wenn `tibber_api_token` gesetzt)
 - `sensor.energy_dashboard_panel_open_meteo_weather` (wenn `weather_location` gesetzt)
 - `sensor.energy_dashboard_panel_resolved_load_power` (Diagnose, automatisch aufgeloeste Last)
 - `sensor.energy_dashboard_panel_lifetime_smart_savings_eur`

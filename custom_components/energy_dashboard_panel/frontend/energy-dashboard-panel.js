@@ -43,6 +43,7 @@ const DIAG_SENSORS = {
   balance_quality: "sensor.energy_dashboard_panel_balance_quality_pct",
   backfill_pending: "sensor.energy_dashboard_panel_price_backfill_pending",
 };
+const TIBBER_LIVE_GRID_SENSOR = "sensor.energy_dashboard_panel_tibber_grid_power";
 
 const WEATHER_ICON = {
   sunny: "mdi:weather-sunny",
@@ -546,6 +547,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ids.push(this._priceEntityId());
     ids.push(this._weatherEntityId());
     ids.push(...Object.values(LIFETIME_SENSORS));
+    ids.push(TIBBER_LIVE_GRID_SENSOR);
     extras.forEach((chip) => ids.push(chip.entity));
 
     return [...new Set(ids.filter((id) => typeof id === "string" && id.trim()))];
@@ -1446,15 +1448,46 @@ class HaEnergyDashboardPanel extends HTMLElement {
     };
   }
 
+  _resolveGridSignedSource(sensors = this._sensors()) {
+    const configuredEntityId = sensors?.grid_power || null;
+    const configuredValue = this._numericPowerState(configuredEntityId);
+    if (configuredValue !== null) {
+      return {
+        entityId: configuredEntityId,
+        signedRaw: configuredValue,
+        source: "configured",
+      };
+    }
+
+    const tibberValue = this._numericPowerState(TIBBER_LIVE_GRID_SENSOR);
+    if (tibberValue !== null) {
+      return {
+        entityId: TIBBER_LIVE_GRID_SENSOR,
+        signedRaw: tibberValue,
+        source: "tibber_api_fallback",
+      };
+    }
+
+    return {
+      entityId: configuredEntityId || TIBBER_LIVE_GRID_SENSOR,
+      signedRaw: null,
+      source: configuredEntityId ? "configured_missing" : "missing",
+    };
+  }
+
   _resolveGridFlow(sensors) {
-    return this._resolveGridFlowValues(
+    const signedSource = this._resolveGridSignedSource(sensors);
+    const flow = this._resolveGridFlowValues(
       {
-        signedRaw: this._numericPowerState(sensors.grid_power),
+        signedRaw: signedSource.signedRaw,
         importRaw: this._numericPowerState(sensors.grid_import_power),
         exportRaw: this._numericPowerState(sensors.grid_export_power),
       },
       this._flowOptions()
     );
+    flow.signedEntityId = signedSource.entityId;
+    flow.signedSource = signedSource.source;
+    return flow;
   }
 
   _resolveBatteryFlowValues(
@@ -1562,7 +1595,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     );
   }
 
-  _buildTrendKey(sensors, windowCfg, priceCfg = null) {
+  _buildTrendKey(sensors, windowCfg, priceCfg = null, gridSignedEntityId = null) {
     const flowOpts = this._flowOptions();
     const endBucket = Math.floor(windowCfg.endMs / (10 * 60 * 1000));
     return [
@@ -1573,7 +1606,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       sensors.load_power || "-",
       sensors.grid_import_power || "-",
       sensors.grid_export_power || "-",
-      sensors.grid_power || "-",
+      gridSignedEntityId || sensors.grid_power || TIBBER_LIVE_GRID_SENSOR,
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_charge_power || "-",
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_discharge_power || "-",
       sensors.battery_power || "-",
@@ -1650,7 +1683,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return this._formatTime(ts);
   }
 
-  _buildTrendData(seriesMap, sensors, windowCfg, priceCfg = null) {
+  _buildTrendData(seriesMap, sensors, windowCfg, priceCfg = null, gridSignedEntityId = null) {
     const start = windowCfg.startMs;
     const end = windowCfg.endMs;
     const stepMs = windowCfg.stepMs;
@@ -1665,7 +1698,24 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const gridExportSeries = sensors.grid_export_power
       ? seriesMap[sensors.grid_export_power] || []
       : [];
-    const gridSignedSeries = sensors.grid_power ? seriesMap[sensors.grid_power] || [] : [];
+    const gridSignedCandidates = [
+      gridSignedEntityId,
+      sensors.grid_power,
+      TIBBER_LIVE_GRID_SENSOR,
+    ].filter((id, index, arr) => id && arr.indexOf(id) === index);
+    let gridSignedSeries = [];
+    let gridSignedScaleEntity = gridSignedCandidates[0] || null;
+    for (const entityId of gridSignedCandidates) {
+      const candidateSeries = seriesMap[entityId] || [];
+      if (candidateSeries.length > 0) {
+        gridSignedSeries = candidateSeries;
+        gridSignedScaleEntity = entityId;
+        break;
+      }
+    }
+    if (gridSignedSeries.length === 0 && gridSignedScaleEntity) {
+      gridSignedSeries = seriesMap[gridSignedScaleEntity] || [];
+    }
     const batteryChargeSeries = sensors.battery_charge_power
       ? seriesMap[sensors.battery_charge_power] || []
       : [];
@@ -1681,7 +1731,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const scaleLoad = this._powerScale(sensors.load_power);
     const scaleGridImport = this._powerScale(sensors.grid_import_power);
     const scaleGridExport = this._powerScale(sensors.grid_export_power);
-    const scaleGridSigned = this._powerScale(sensors.grid_power);
+    const scaleGridSigned = this._powerScale(gridSignedScaleEntity);
     const scaleBatteryCharge = this._powerScale(sensors.battery_charge_power);
     const scaleBatteryDischarge = this._powerScale(sensors.battery_discharge_power);
     const scaleBatterySigned = this._powerScale(sensors.battery_power);
@@ -1928,7 +1978,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const flowOpts = this._flowOptions();
     const windowCfg = this._trendWindow();
     const priceCfg = this._trendPriceConfig();
-    const key = this._buildTrendKey(sensors, windowCfg, priceCfg);
+    const signedGridSource = this._resolveGridSignedSource(sensors);
+    const signedGridEntityId = signedGridSource.entityId;
+    const key = this._buildTrendKey(sensors, windowCfg, priceCfg, signedGridEntityId);
     const now = Date.now();
     if (this._trendLoading) {
       return;
@@ -1949,6 +2001,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     if (sensors.grid_power) {
       entities.push(sensors.grid_power);
+    }
+    if (this._stateObj(TIBBER_LIVE_GRID_SENSOR) || !sensors.grid_power) {
+      entities.push(TIBBER_LIVE_GRID_SENSOR);
     }
     if (!flowOpts.useSignedBatteryPower && sensors.battery_charge_power) {
       entities.push(sensors.battery_charge_power);
@@ -1982,7 +2037,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const path = `history/period/${startIso}?${params.toString()}`;
       const history = await this._hass.callApi("GET", path);
       const series = this._historyToSeries(history);
-      this._trendData = this._buildTrendData(series, sensors, windowCfg, priceCfg);
+      this._trendData = this._buildTrendData(
+        series,
+        sensors,
+        windowCfg,
+        priceCfg,
+        signedGridEntityId
+      );
       this._trendLastFetch = Date.now();
     } catch (error) {
       this._trendData = null;
@@ -2306,26 +2367,30 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const gridMode = this._normalizeSensorMode(flowOpts.gridSensorMode);
     const batteryMode = this._normalizeSensorMode(flowOpts.batterySensorMode);
     const hasGridDual = Boolean(sensorMap.grid_import_power || sensorMap.grid_export_power);
+    const signedGridConfiguredAvailable =
+      sensorMap.grid_power && this._numericPowerState(sensorMap.grid_power) !== null;
+    const signedGridTibberAvailable =
+      this._numericPowerState(TIBBER_LIVE_GRID_SENSOR) !== null;
     const signedGridAvailable = Boolean(
-      sensorMap.grid_power && this._stateObj(sensorMap.grid_power)
+      signedGridConfiguredAvailable || signedGridTibberAvailable
     );
     const hasBatteryDual = Boolean(
       sensorMap.battery_charge_power || sensorMap.battery_discharge_power
     );
     const useSignedBattery = flowOpts.useSignedBatteryPower;
     const gridDualAvailable = Boolean(
-      (sensorMap.grid_import_power && this._stateObj(sensorMap.grid_import_power)) ||
-        (sensorMap.grid_export_power && this._stateObj(sensorMap.grid_export_power))
+      (sensorMap.grid_import_power && this._numericPowerState(sensorMap.grid_import_power) !== null) ||
+        (sensorMap.grid_export_power && this._numericPowerState(sensorMap.grid_export_power) !== null)
     );
     const batterySignedAvailable = Boolean(
-      sensorMap.battery_power && this._stateObj(sensorMap.battery_power)
+      sensorMap.battery_power && this._numericPowerState(sensorMap.battery_power) !== null
     );
     const batteryDualAvailable = Boolean(
-      (sensorMap.battery_charge_power && this._stateObj(sensorMap.battery_charge_power)) ||
-        (sensorMap.battery_discharge_power && this._stateObj(sensorMap.battery_discharge_power))
+      (sensorMap.battery_charge_power && this._numericPowerState(sensorMap.battery_charge_power) !== null) ||
+        (sensorMap.battery_discharge_power && this._numericPowerState(sensorMap.battery_discharge_power) !== null)
     );
     const solarAvailable = Boolean(
-      sensorMap.solar_power && this._stateObj(sensorMap.solar_power)
+      sensorMap.solar_power && this._numericPowerState(sensorMap.solar_power) !== null
     );
     const canDeriveLoad =
       solarAvailable &&
@@ -2338,6 +2403,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
           return false;
         }
         if (gridMode === "dual" && key === "grid_power") {
+          return false;
+        }
+        if (key === "grid_power" && signedGridTibberAvailable) {
           return false;
         }
         if (
@@ -4496,6 +4564,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <div class="map-grid">
             <div class="k">solar_power</div><div class="v">${sensors.solar_power}</div>
             <div class="k">grid_power</div><div class="v">${sensors.grid_power}</div>
+            <div class="k">grid_power_tibber_fallback</div><div class="v">${TIBBER_LIVE_GRID_SENSOR}</div>
+            <div class="k">grid_power_effektiv</div><div class="v">${gridFlow.signedEntityId || "-"}</div>
             <div class="k">grid_import</div><div class="v">${sensors.grid_import_power || "-"}</div>
             <div class="k">grid_export</div><div class="v">${sensors.grid_export_power || "-"}</div>
             <div class="k">battery_power</div><div class="v">${sensors.battery_power}</div>
@@ -4516,6 +4586,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">charge_solar</div><div class="v">${this._formatPower(chargeSource.solarPart)}</div>
             <div class="k">charge_grid</div><div class="v">${this._formatPower(chargeSource.gridPart)}</div>
             <div class="k">grid_source</div><div class="v">${gridFlow.mode}</div>
+            <div class="k">grid_signed_source</div><div class="v">${gridFlow.signedSource || "-"}</div>
             <div class="k">battery_source</div><div class="v">${batteryFlow.mode}</div>
             <div class="k">cfg_use_signed_battery</div><div class="v">${flowOpts.useSignedBatteryPower ? "ja" : "nein"}</div>
             <div class="k">cfg_grid_mode</div><div class="v">${flowOpts.gridSensorMode}</div>

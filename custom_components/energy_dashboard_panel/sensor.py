@@ -71,6 +71,7 @@ from .const import (
     DOMAIN,
     ENTITY_OPEN_METEO_WEATHER,
     ENTITY_RESOLVED_LOAD_POWER,
+    ENTITY_TIBBER_API_GRID_POWER,
     ENTITY_TIBBER_API_PRICE,
     ENTITY_LIFETIME_BATTERY_ARBITRAGE_EUR,
     ENTITY_LIFETIME_BATTERY_SHIFT_KWH,
@@ -84,6 +85,7 @@ from .const import (
 _UPDATE_INTERVAL = timedelta(seconds=30)
 _SAVE_INTERVAL = timedelta(minutes=10)
 _TIBBER_API_URL = "https://api.tibber.com/v1-beta/gql"
+_TIBBER_LIVE_UPDATE_INTERVAL = timedelta(seconds=20)
 _OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _MAX_PRICE_CACHE_HOURS = 240
@@ -282,6 +284,20 @@ def _hour_bucket_key(ts: datetime) -> int:
         ts = ts.replace(tzinfo=timezone.utc)
     ts_utc = ts.astimezone(timezone.utc)
     return int(ts_utc.timestamp() // 3600)
+
+
+def _select_tibber_home(homes: Any, home_id: str | None) -> dict[str, Any] | None:
+    """Select Tibber home by configured id, else first home."""
+    if not isinstance(homes, list) or not homes:
+        return None
+    if home_id:
+        for home in homes:
+            if isinstance(home, dict) and str(home.get("id")) == home_id:
+                return home
+    for home in homes:
+        if isinstance(home, dict):
+            return home
+    return None
 
 
 def _open_meteo_condition(
@@ -557,18 +573,10 @@ query EnergyDashboardPrices {
             return
 
         homes = (((data.get("data") or {}).get("viewer") or {}).get("homes")) or []
-        if not isinstance(homes, list) or len(homes) == 0:
+        selected_home = _select_tibber_home(homes, self._home_id)
+        if not isinstance(selected_home, dict):
             self._attr_available = False
             return
-
-        selected_home = None
-        if self._home_id:
-            selected_home = next(
-                (home for home in homes if str(home.get("id")) == self._home_id),
-                None,
-            )
-        if selected_home is None:
-            selected_home = homes[0]
 
         price_info = (((selected_home.get("currentSubscription") or {}).get("priceInfo")) or {})
         current = price_info.get("current") or {}
@@ -617,6 +625,175 @@ query EnergyDashboardPrices {
             "next_price_starts_at": next_rows[0][0].isoformat() if next_rows else None,
             "min_today": round(min_today, 5) if min_today is not None else None,
             "max_today": round(max_today, 5) if max_today is not None else None,
+            "last_sync": dt_util.utcnow().isoformat(),
+        }
+
+
+class _TibberApiLiveGridSensor(SensorEntity):
+    """Optional Tibber API live grid power sensor (signed import/export)."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_name = "Tibber Netzleistung"
+    _attr_icon = "mdi:transmission-tower"
+    _attr_native_unit_of_measurement = "W"
+    _attr_suggested_display_precision = 0
+    _attr_state_class = getattr(SensorStateClass, "MEASUREMENT", None)
+    _attr_device_class = getattr(SensorDeviceClass, "POWER", None)
+
+    def __init__(self, hass: HomeAssistant, token: str, home_id: str | None) -> None:
+        self._hass = hass
+        self._token = token
+        self._home_id = home_id.strip() if isinstance(home_id, str) and home_id.strip() else None
+        self._attrs: dict[str, Any] = {}
+        self._attr_native_value = None
+        self._attr_available = False
+        self._unsub_interval: Callable[[], None] | None = None
+
+        self.entity_id = ENTITY_TIBBER_API_GRID_POWER
+        self._attr_unique_id = ENTITY_TIBBER_API_GRID_POWER.replace("sensor.", "")
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, "tibber_api_live_grid")},
+            name="Energie Dashboard Tibber API",
+            manufacturer="Tibber",
+            model="GraphQL Live Grid Feed",
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """State attributes with split import/export values."""
+        return self._attrs
+
+    async def async_added_to_hass(self) -> None:
+        """Start high-frequency background updates for live grid power."""
+
+        @callback
+        def _schedule_update(_: datetime) -> None:
+            self._hass.async_create_task(self._async_refresh_and_write())
+
+        self._unsub_interval = async_track_time_interval(
+            self._hass,
+            _schedule_update,
+            _TIBBER_LIVE_UPDATE_INTERVAL,
+        )
+        await self._async_refresh_and_write()
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Stop background update listener."""
+        if self._unsub_interval:
+            self._unsub_interval()
+            self._unsub_interval = None
+
+    async def async_update(self) -> None:
+        """Allow manual refresh via entity update service."""
+        await self._async_fetch()
+
+    async def _async_refresh_and_write(self) -> None:
+        """Refresh from API and publish state immediately."""
+        await self._async_fetch()
+        self.async_write_ha_state()
+
+    async def _async_fetch(self) -> None:
+        """Fetch latest Tibber live measurement and derive signed grid power."""
+        query = """
+query EnergyDashboardLiveGrid {
+  viewer {
+    homes {
+      id
+      appNickname
+      currentSubscription {
+        status
+      }
+      features {
+        realTimeConsumptionEnabled
+      }
+      liveMeasurement {
+        timestamp
+        power
+        powerProduction
+      }
+    }
+  }
+}
+""".strip()
+
+        headers = {
+            "Authorization": f"Bearer {self._token}",
+            "Content-Type": "application/json",
+        }
+        payload = {"query": query}
+        session = async_get_clientsession(self._hass)
+
+        try:
+            resp = await session.post(_TIBBER_API_URL, headers=headers, json=payload)
+            data = await resp.json(content_type=None)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Tibber live grid request failed: %s", err)
+            self._attr_available = False
+            return
+
+        if not isinstance(data, dict):
+            self._attr_available = False
+            return
+
+        errors = data.get("errors")
+        if isinstance(errors, list) and errors:
+            _LOGGER.debug("Tibber live grid returned errors: %s", errors)
+            self._attr_available = False
+            return
+
+        homes = (((data.get("data") or {}).get("viewer") or {}).get("homes")) or []
+        selected_home = _select_tibber_home(homes, self._home_id)
+        if not isinstance(selected_home, dict):
+            self._attr_available = False
+            return
+
+        live = selected_home.get("liveMeasurement") or {}
+        if not isinstance(live, dict) or not live:
+            self._attr_available = False
+            return
+
+        raw_import = _parse_number(live.get("power"))
+        raw_export = _parse_number(live.get("powerProduction"))
+
+        import_power: float | None = None
+        export_power: float | None = None
+        signed_power: float | None = None
+
+        if raw_import is not None and raw_export is not None:
+            import_power = max(0.0, raw_import)
+            export_power = max(0.0, raw_export)
+            signed_power = import_power - export_power
+        elif raw_import is not None:
+            if raw_import >= 0:
+                import_power = raw_import
+                export_power = 0.0
+                signed_power = raw_import
+            else:
+                import_power = 0.0
+                export_power = abs(raw_import)
+                signed_power = raw_import
+        elif raw_export is not None:
+            import_power = 0.0
+            export_power = max(0.0, raw_export)
+            signed_power = -export_power
+
+        if signed_power is None:
+            self._attr_available = False
+            return
+
+        self._attr_available = True
+        self._attr_native_value = round(signed_power, 1)
+        self._attrs = {
+            "source": "tibber_api_live",
+            "home_id": selected_home.get("id"),
+            "home_name": selected_home.get("appNickname"),
+            "import_power_w": round(import_power or 0.0, 1),
+            "export_power_w": round(export_power or 0.0, 1),
+            "signed_power_w": round(signed_power, 1),
+            "measurement_timestamp": live.get("timestamp"),
+            "subscription_status": ((selected_home.get("currentSubscription") or {}).get("status")),
+            "real_time_enabled": ((selected_home.get("features") or {}).get("realTimeConsumptionEnabled")),
             "last_sync": dt_util.utcnow().isoformat(),
         }
 
@@ -901,6 +1078,8 @@ class _LifetimeAccumulator:
     def _resolve_grid(self) -> tuple[float | None, float | None, float | None]:
         """Resolve grid flow from dual or signed sensors."""
         signed = self._entity_num(self._sensors.get(CONF_GRID_POWER))
+        if signed is None:
+            signed = self._entity_num(ENTITY_TIBBER_API_GRID_POWER)
         import_raw = self._entity_num(self._sensors.get(CONF_GRID_IMPORT_POWER))
         export_raw = self._entity_num(self._sensors.get(CONF_GRID_EXPORT_POWER))
         has_dual = import_raw is not None or export_raw is not None
@@ -1435,11 +1614,20 @@ async def async_setup_platform(
     tibber_token = conf.get(CONF_TIBBER_API_TOKEN)
     if isinstance(tibber_token, str) and tibber_token.strip():
         tibber_home_id = conf.get(CONF_TIBBER_HOME_ID)
+        token = tibber_token.strip()
+        home_id = tibber_home_id if isinstance(tibber_home_id, str) else None
         entities.append(
             _TibberApiPriceSensor(
                 hass=hass,
-                token=tibber_token.strip(),
-                home_id=tibber_home_id if isinstance(tibber_home_id, str) else None,
+                token=token,
+                home_id=home_id,
+            )
+        )
+        entities.append(
+            _TibberApiLiveGridSensor(
+                hass=hass,
+                token=token,
+                home_id=home_id,
             )
         )
     weather_location = conf.get(CONF_WEATHER_LOCATION)
