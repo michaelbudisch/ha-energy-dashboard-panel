@@ -43,7 +43,10 @@ energy_dashboard_panel:
 
   sensors:
     solar_power: sensor.pv_gesamtleistung
-    load_power: sensor.hausverbrauch_watt
+    # Optional: eigener Lastsensor.
+    # Wenn nicht gesetzt, wird load_power automatisch berechnet:
+    # load = grid_power + solar_power + max(battery_power, 0)
+    # load_power: sensor.hausverbrauch_watt
     # Lokaler Zwei-Wege-Zaehler (signed, in auto priorisiert)
     grid_power: sensor.zaehler_zweiwege_leistung
     # Optionaler Fallback:
@@ -69,10 +72,19 @@ Hinweis Netzsensoren:
 - In `grid_sensor_mode: auto` wird `grid_power` (Zwei-Wege-Sensor) bevorzugt.
 - `grid_import_power` und `grid_export_power` dienen als Fallback.
 
+Hinweis load_power:
+
+- Ein manueller Helper ist optional.
+- Wenn `load_power` fehlt, berechnet die Integration automatisch:
+  `load_power = grid_power + solar_power + max(battery_power, 0)`
+- Der aufgeloeste Wert steht als Diagnosesensor bereit:
+  `sensor.energy_dashboard_panel_resolved_load_power`
+
 ## Erzeugte Sensoren (Auszug)
 
 - `sensor.energy_dashboard_panel_tibber_price` (wenn `tibber_api_token` gesetzt)
 - `sensor.energy_dashboard_panel_open_meteo_weather` (wenn `weather_location` gesetzt)
+- `sensor.energy_dashboard_panel_resolved_load_power` (Diagnose, automatisch aufgeloeste Last)
 - `sensor.energy_dashboard_panel_lifetime_smart_savings_eur`
 - `sensor.energy_dashboard_panel_lifetime_solar_direct_savings_eur`
 - `sensor.energy_dashboard_panel_lifetime_non_grid_value_eur`

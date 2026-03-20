@@ -54,7 +54,10 @@ energy_dashboard_panel:
 
   sensors:
     solar_power: sensor.pv_gesamtleistung
-    load_power: sensor.hausverbrauch_watt
+    # Optional: eigener Lastsensor.
+    # Wenn nicht gesetzt, wird load_power automatisch berechnet:
+    # load = grid_power + solar_power + max(battery_power, 0)
+    # load_power: sensor.hausverbrauch_watt
     # Lokaler Zwei-Wege-Zaehler (bevorzugt in grid_sensor_mode: auto)
     grid_power: sensor.zaehler_zweiwege_leistung
     # Optional als Fallback:
@@ -74,6 +77,14 @@ Hinweis Netzsensoren:
 
 - In `grid_sensor_mode: auto` wird `sensors.grid_power` (Zwei-Wege, signed) jetzt bevorzugt.
 - `grid_import_power`/`grid_export_power` bleiben als Fallback nutzbar.
+
+Hinweis load_power:
+
+- Ein manueller Helper ist nicht mehr zwingend noetig.
+- Wenn `sensors.load_power` fehlt, berechnet das Panel automatisch:
+  `load_power = grid_power + solar_power + max(battery_power, 0)`
+- Zusaetzlich wird ein Diagnosesensor erzeugt:
+  `sensor.energy_dashboard_panel_resolved_load_power`
 
 ## GitHub: Repo erstellen und pushen
 

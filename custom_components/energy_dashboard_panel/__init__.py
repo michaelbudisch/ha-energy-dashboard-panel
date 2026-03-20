@@ -86,7 +86,7 @@ _OPTIONAL_ENTITY_SCHEMA = vol.Any(None, cv.entity_id)
 _SENSOR_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_SOLAR_POWER, default=DEFAULT_SENSORS[CONF_SOLAR_POWER]): cv.entity_id,
-        vol.Optional(CONF_LOAD_POWER, default=DEFAULT_SENSORS[CONF_LOAD_POWER]): cv.entity_id,
+        vol.Optional(CONF_LOAD_POWER, default=DEFAULT_SENSORS[CONF_LOAD_POWER]): _OPTIONAL_ENTITY_SCHEMA,
         vol.Optional(CONF_GRID_POWER, default=DEFAULT_SENSORS[CONF_GRID_POWER]): cv.entity_id,
         vol.Optional(
             CONF_GRID_IMPORT_POWER, default=DEFAULT_SENSORS[CONF_GRID_IMPORT_POWER]

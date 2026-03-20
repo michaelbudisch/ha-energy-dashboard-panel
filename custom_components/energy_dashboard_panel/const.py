@@ -25,6 +25,7 @@ ENTITY_LIFETIME_BATTERY_ARBITRAGE_EUR = f"sensor.{DOMAIN}_lifetime_battery_arbit
 ENTITY_LIFETIME_BATTERY_SHIFT_KWH = f"sensor.{DOMAIN}_lifetime_battery_shift_kwh"
 ENTITY_TIBBER_API_PRICE = f"sensor.{DOMAIN}_tibber_price"
 ENTITY_OPEN_METEO_WEATHER = f"sensor.{DOMAIN}_open_meteo_weather"
+ENTITY_RESOLVED_LOAD_POWER = f"sensor.{DOMAIN}_resolved_load_power"
 ENTITY_BALANCE_ERROR_W = f"sensor.{DOMAIN}_balance_error_w"
 ENTITY_BALANCE_QUALITY_PCT = f"sensor.{DOMAIN}_balance_quality_pct"
 ENTITY_PRICE_BACKFILL_PENDING = f"sensor.{DOMAIN}_price_backfill_pending"
@@ -79,7 +80,7 @@ DEFAULT_BATTERY_SENSOR_MODE = SENSOR_MODE_AUTO
 
 DEFAULT_SENSORS = {
     CONF_SOLAR_POWER: "sensor.ems_solar_power",
-    CONF_LOAD_POWER: "sensor.ems_home_total_power",
+    CONF_LOAD_POWER: None,
     CONF_GRID_POWER: "sensor.ems_grid_power",
     CONF_BATTERY_POWER: "sensor.ems_battery_power",
     CONF_BATTERY_SOC: "sensor.ems_battery_soc",

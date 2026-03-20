@@ -70,6 +70,7 @@ from .const import (
     DEFAULT_USE_SIGNED_BATTERY_POWER,
     DOMAIN,
     ENTITY_OPEN_METEO_WEATHER,
+    ENTITY_RESOLVED_LOAD_POWER,
     ENTITY_TIBBER_API_PRICE,
     ENTITY_LIFETIME_BATTERY_ARBITRAGE_EUR,
     ENTITY_LIFETIME_BATTERY_SHIFT_KWH,
@@ -170,6 +171,15 @@ class _DiagMetricDef:
 
 
 _DIAG_METRICS: tuple[_DiagMetricDef, ...] = (
+    _DiagMetricDef(
+        key="resolved_load_w",
+        entity_id=ENTITY_RESOLVED_LOAD_POWER,
+        name="Gesamtlast Aufgelöst",
+        icon="mdi:home-lightning-bolt",
+        unit="W",
+        precision=1,
+        state_class=getattr(SensorStateClass, "MEASUREMENT", None),
+    ),
     _DiagMetricDef(
         key="balance_error_w",
         entity_id=ENTITY_BALANCE_ERROR_W,
@@ -641,6 +651,8 @@ class _LifetimeAccumulator:
         self._balance_error_w: float | None = None
         self._balance_quality_pct: float | None = None
         self._balance_status = "unknown"
+        self._resolved_load_w: float | None = None
+        self._resolved_load_source = "unknown"
 
         self._unsub_interval: Callable[[], None] | None = None
         self._unsub_stop: Callable[[], None] | None = None
@@ -734,6 +746,8 @@ class _LifetimeAccumulator:
         self._balance_error_w = None
         self._balance_quality_pct = None
         self._balance_status = "unknown"
+        self._resolved_load_w = None
+        self._resolved_load_source = "unknown"
         self._last_ts = dt_util.utcnow()
         await self._async_save()
         self._dispatch_update()
@@ -754,6 +768,8 @@ class _LifetimeAccumulator:
 
     def get_diag_metric(self, key: str) -> float | int | None:
         """Return diagnostic value by key."""
+        if key == "resolved_load_w":
+            return self._resolved_load_w
         if key == "balance_error_w":
             return self._balance_error_w
         if key == "balance_quality_pct":
@@ -779,6 +795,7 @@ class _LifetimeAccumulator:
             if self._balance_quality_pct is not None
             else None,
             "balance_status": self._balance_status,
+            "resolved_load_source": self._resolved_load_source,
             "battery_shift_buy_eur": round(self._battery_shift_buy_eur, 6),
             "battery_shift_sell_eur": round(self._battery_shift_sell_eur, 6),
             "battery_pool_kwh": round(self._battery_pool_kwh, 6),
@@ -947,14 +964,40 @@ class _LifetimeAccumulator:
 
         return max(0.0, -signed), max(0.0, signed), signed
 
-    def _resolved_load(self) -> float | None:
-        """Resolve house load with optional sign inversion."""
+    def _resolved_load(
+        self,
+        *,
+        solar: float | None = None,
+        grid_signed: float | None = None,
+        battery_discharge: float | None = None,
+    ) -> float | None:
+        """Resolve load from sensor or derive from solar+grid+battery."""
         load = self._entity_num(self._sensors.get(CONF_LOAD_POWER))
         if load is None:
-            return None
+            if solar is None:
+                solar_raw = self._entity_num(self._sensors.get(CONF_SOLAR_POWER))
+                solar = max(0.0, solar_raw) if solar_raw is not None else None
+            if grid_signed is None:
+                _grid_import, _grid_export, grid_signed = self._resolve_grid()
+            if battery_discharge is None:
+                _battery_charge, battery_discharge, _battery_signed = self._resolve_battery()
+
+            if solar is None or grid_signed is None or battery_discharge is None:
+                self._resolved_load_w = None
+                self._resolved_load_source = "unavailable"
+                return None
+
+            derived = max(0.0, solar + grid_signed + max(0.0, battery_discharge))
+            self._resolved_load_w = derived
+            self._resolved_load_source = "derived"
+            return derived
+
         if self._invert_load_power_sign:
             load = -load
-        return max(0.0, load)
+        resolved = max(0.0, load)
+        self._resolved_load_w = resolved
+        self._resolved_load_source = "sensor"
+        return resolved
 
     def _cache_price(self, hour_key: int, price_eur: float) -> bool:
         """Cache hourly EUR/kWh values for resilient backfill."""
@@ -1201,15 +1244,18 @@ class _LifetimeAccumulator:
         if delta_h > 0.5:
             return False
 
-        load = self._resolved_load()
-        if load is None:
-            return False
-
         solar_raw = self._entity_num(self._sensors.get(CONF_SOLAR_POWER))
         solar = max(0.0, solar_raw) if solar_raw is not None else None
 
         grid_import, grid_export, _grid_signed = self._resolve_grid()
         battery_charge_raw, battery_discharge_raw, _battery_signed = self._resolve_battery()
+        load = self._resolved_load(
+            solar=solar,
+            grid_signed=_grid_signed,
+            battery_discharge=battery_discharge_raw,
+        )
+        if load is None:
+            return False
         battery_charge = max(0.0, battery_charge_raw or 0.0)
         battery_discharge = max(0.0, battery_discharge_raw or 0.0)
         house_net = max(0.0, load - battery_charge)
