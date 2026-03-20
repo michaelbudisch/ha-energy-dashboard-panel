@@ -10,9 +10,11 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 
 ## Screenshots
 
-![Dashboard Screenshot 1](docs/images/dashboard-1.jpeg)
-![Dashboard Screenshot 2](docs/images/dashboard-2.jpeg)
-![Dashboard Screenshot 3](docs/images/dashboard-3.jpeg)
+<p align="center">
+  <img src="docs/images/dashboard-1.jpeg" alt="Dashboard Screenshot 1" width="31%" />
+  <img src="docs/images/dashboard-2.jpeg" alt="Dashboard Screenshot 2" width="31%" />
+  <img src="docs/images/dashboard-3.jpeg" alt="Dashboard Screenshot 3" width="31%" />
+</p>
 
 ## Projektstruktur
 
