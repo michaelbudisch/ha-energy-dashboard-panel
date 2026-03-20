@@ -105,6 +105,10 @@ const TREND_RANGES = {
   month: { key: "month", label: "Monat" },
   total: { key: "total", label: "Gesamt" },
 };
+const TREND_CHART_MODES = {
+  line: "line",
+  bars: "bars",
+};
 
 const GRID_STATUS_ENTER_W = 80;
 const GRID_STATUS_EXIT_W = 50;
@@ -131,6 +135,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendLastFetch = 0;
     this._trendCache = new Map();
     this._trendRange = TREND_RANGES.today.key;
+    this._trendChartMode = TREND_CHART_MODES.line;
+    this._trendChartModeLoaded = false;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
     this._gridStatusState = "idle";
@@ -254,6 +260,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
     this._themeLoaded = false;
+    this._trendChartModeLoaded = false;
     this._hasRenderedTemplate = false;
     this._requestRender({ immediate: true, full: true });
   }
@@ -479,6 +486,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return `energy_dashboard_panel_theme::${path}`;
   }
 
+  _trendModeStorageKey() {
+    const path = this._panel?.url_path || this._panel?.path || "default";
+    return `energy_dashboard_panel_trend_mode::${path}`;
+  }
+
   _ensureThemePreference() {
     if (this._themeLoaded) {
       return;
@@ -511,6 +523,38 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     this._themeDark = next;
     this._saveThemePreference();
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _ensureTrendChartMode() {
+    if (this._trendChartModeLoaded) {
+      return;
+    }
+    let mode = TREND_CHART_MODES.line;
+    try {
+      const raw = window.localStorage.getItem(this._trendModeStorageKey());
+      if (raw === TREND_CHART_MODES.line || raw === TREND_CHART_MODES.bars) {
+        mode = raw;
+      }
+    } catch (error) {
+      // Ignore storage failures.
+    }
+    this._trendChartMode = mode;
+    this._trendChartModeLoaded = true;
+  }
+
+  _setTrendChartMode(modeRaw) {
+    const mode = modeRaw === TREND_CHART_MODES.bars ? TREND_CHART_MODES.bars : TREND_CHART_MODES.line;
+    if (this._trendChartMode === mode) {
+      return;
+    }
+    this._trendChartMode = mode;
+    try {
+      window.localStorage.setItem(this._trendModeStorageKey(), mode);
+    } catch (error) {
+      // Ignore storage failures.
+    }
+    this._scheduleChartRedraw();
     this._requestRender({ immediate: true, full: true });
   }
 
@@ -2015,6 +2059,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
         load: null,
         renewable: null,
         autarky: null,
+        solarCover: null,
+        batteryCover: null,
+        gridCover: null,
         saveSolarEur: null,
         saveArbitrageEur: null,
         saveSmartEur: null,
@@ -2044,6 +2091,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
       point.load = load;
       point.renewable = renew;
       point.autarky = autarky;
+      const solarCover = solar === null ? 0 : Math.min(load, Math.max(0, solar));
+      const batteryCover = Math.min(Math.max(0, load - solarCover), batteryDischarge);
+      const gridCover = Math.max(0, load - solarCover - batteryCover);
+      point.solarCover = solarCover;
+      point.batteryCover = batteryCover;
+      point.gridCover = gridCover;
 
       sumLoad += load;
       sumRenewable += renew;
@@ -2494,9 +2547,68 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ctx.setLineDash([]);
     };
 
-    drawPowerLine("load", "#f29b38", 2.4);
-    drawPowerLine("renewable", "#25b788", 2.2);
-    drawPctLine("autarky", "#2b78d7");
+    if (this._trendChartMode === TREND_CHART_MODES.bars) {
+      const slot = data.points.length > 1 ? w / (data.points.length - 1) : w;
+      const barWidth = this._clamp(slot * 0.62, 2, 18);
+      const baselineY = pad.top + h;
+      const segmentWidth = Math.max(1, barWidth - 2);
+      data.points.forEach((point, i) => {
+        const load = Math.max(0, point?.load ?? 0);
+        if (!(load > 0)) {
+          return;
+        }
+        const xCenter = xAt(i, data.points.length);
+        const xLeft = xCenter - barWidth / 2;
+        const yTop = yPower(load);
+        const barHeight = baselineY - yTop;
+        if (!(barHeight > 0)) {
+          return;
+        }
+
+        ctx.fillStyle = this._themeDark ? "rgba(242, 155, 56, 0.12)" : "rgba(242, 155, 56, 0.16)";
+        ctx.fillRect(xLeft, yTop, barWidth, barHeight);
+        ctx.strokeStyle = this._themeDark ? "rgba(242, 155, 56, 0.36)" : "rgba(184, 111, 24, 0.34)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xLeft + 0.5, yTop + 0.5, Math.max(1, barWidth - 1), Math.max(1, barHeight - 1));
+
+        const solarCover = this._clamp(point.solarCover ?? 0, 0, load);
+        const batteryCover = this._clamp(point.batteryCover ?? 0, 0, load - solarCover);
+        const gridCover = this._clamp(point.gridCover ?? 0, 0, load - solarCover - batteryCover);
+
+        let cursor = baselineY;
+        const drawSegment = (valueW, color) => {
+          if (!(valueW > 0)) {
+            return;
+          }
+          const segHeight = (valueW / maxLoad) * h;
+          if (!(segHeight > 0.2)) {
+            return;
+          }
+          cursor -= segHeight;
+          ctx.fillStyle = color;
+          ctx.fillRect(xLeft + 1, cursor, segmentWidth, segHeight);
+        };
+
+        drawSegment(solarCover, "#25b788");
+        drawSegment(batteryCover, "#7c5cff");
+        drawSegment(gridCover, this._themeDark ? "rgba(156, 174, 195, 0.38)" : "rgba(82, 104, 126, 0.35)");
+
+        if (point.autarky !== null && point.autarky !== undefined) {
+          const autarkyCover = this._clamp((point.autarky / 100) * load, 0, load);
+          const yAut = yPower(autarkyCover);
+          ctx.strokeStyle = "#2b78d7";
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.moveTo(xLeft, yAut);
+          ctx.lineTo(xLeft + barWidth, yAut);
+          ctx.stroke();
+        }
+      });
+    } else {
+      drawPowerLine("load", "#f29b38", 2.4);
+      drawPowerLine("renewable", "#25b788", 2.2);
+      drawPctLine("autarky", "#2b78d7");
+    }
 
     const hoverIdx = this._trendHoverIndex;
     if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < data.points.length) {
@@ -2528,15 +2640,35 @@ class HaEnergyDashboardPanel extends HTMLElement {
           ctx.stroke();
         };
 
-        drawMarker(point.load, yPower, "#f29b38");
-        drawMarker(point.renewable, yPower, "#25b788");
-        drawMarker(point.autarky, yPct, "#2b78d7");
+        if (this._trendChartMode === TREND_CHART_MODES.bars) {
+          drawMarker(point.load, yPower, "#f29b38");
+          drawMarker(point.solarCover, yPower, "#25b788");
+          drawMarker(point.batteryCover, yPower, "#7c5cff");
+          const autarkyCover =
+            point.autarky === null || point.autarky === undefined || point.load === null
+              ? null
+              : this._clamp((point.autarky / 100) * point.load, 0, point.load);
+          drawMarker(autarkyCover, yPower, "#2b78d7");
+        } else {
+          drawMarker(point.load, yPower, "#f29b38");
+          drawMarker(point.renewable, yPower, "#25b788");
+          drawMarker(point.autarky, yPct, "#2b78d7");
+        }
 
         const lines = [`Zeit: ${this._formatTime(point.t)}`];
         if (point.load !== null && point.load !== undefined) {
           lines.push(`Gesamtlast: ${this._formatPower(point.load)}`);
         }
-        if (point.renewable !== null && point.renewable !== undefined) {
+        if (point.solarCover !== null && point.solarCover !== undefined) {
+          lines.push(`Solar deckt: ${this._formatPower(point.solarCover)}`);
+        }
+        if (point.batteryCover !== null && point.batteryCover !== undefined) {
+          lines.push(`Batterie deckt: ${this._formatPower(point.batteryCover)}`);
+        }
+        if (point.gridCover !== null && point.gridCover !== undefined) {
+          lines.push(`Netz deckt: ${this._formatPower(point.gridCover)}`);
+        }
+        if (point.renewable !== null && point.renewable !== undefined && this._trendChartMode !== TREND_CHART_MODES.bars) {
           lines.push(`Erneuerbar: ${this._formatPower(point.renewable)}`);
         }
         if (point.autarky !== null && point.autarky !== undefined) {
@@ -3529,6 +3661,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll("[data-action='trend-mode']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.getAttribute("data-mode");
+        if (mode) {
+          this._setTrendChartMode(mode);
+        }
+      });
+    });
+
     if (!this._editMode) {
       return;
     }
@@ -3604,6 +3745,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     this._ensurePositions();
     this._ensureThemePreference();
+    this._ensureTrendChartMode();
 
     const cfg = this._panelConfig();
     const sensors = this._sensors();
@@ -3692,6 +3834,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const range7d = this._trendRange === TREND_RANGES.week7.key;
     const rangeMonth = this._trendRange === TREND_RANGES.month.key;
     const rangeTotal = this._trendRange === TREND_RANGES.total.key;
+    const trendModeLine = this._trendChartMode === TREND_CHART_MODES.line;
+    const trendModeBars = this._trendChartMode === TREND_CHART_MODES.bars;
     const themeDark = this._themeDark;
 
     const liveModel = {
@@ -4330,6 +4474,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
           display: inline-flex;
           align-items: center;
           gap: 8px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
         }
 
         .trend-title {
@@ -4352,6 +4498,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
           border: 1px solid rgba(21, 40, 57, 0.1);
           border-radius: 999px;
           padding: 3px;
+        }
+
+        .trend-mode-controls .range-btn {
+          padding-inline: 10px;
         }
 
         .range-btn {
@@ -4407,6 +4557,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .dot.load { background: #f29b38; }
         .dot.renew { background: #25b788; }
+        .dot.batt { background: #7c5cff; }
         .dot.aut { background: #2b78d7; }
         .dot.save-solar { background: #25b788; }
         .dot.save-arb { background: #d1782e; }
@@ -4971,14 +5122,29 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 <button class="range-btn ${rangeMonth ? "active" : ""}" data-action="trend-range" data-range="month">Monat</button>
                 <button class="range-btn ${rangeTotal ? "active" : ""}" data-action="trend-range" data-range="total">Gesamt</button>
               </div>
+              <div class="trend-controls trend-mode-controls">
+                <button class="range-btn ${trendModeLine ? "active" : ""}" data-action="trend-mode" data-mode="line">Linie</button>
+                <button class="range-btn ${trendModeBars ? "active" : ""}" data-action="trend-mode" data-mode="bars">Balken</button>
+              </div>
               <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
             </div>
           </div>
           <canvas id="trend-canvas"></canvas>
           <div class="trend-legend">
+            ${
+              trendModeBars
+                ? `
+            <span class="legend-item"><span class="dot load"></span>Gesamtlast</span>
+            <span class="legend-item"><span class="dot renew"></span>Solar deckt</span>
+            <span class="legend-item"><span class="dot batt"></span>Batterie deckt</span>
+            <span class="legend-item"><span class="dot aut"></span>Autarkie-Marker</span>
+            `
+                : `
             <span class="legend-item"><span class="dot load"></span>Gesamtlast</span>
             <span class="legend-item"><span class="dot renew"></span>Erneuerbarer Anteil</span>
             <span class="legend-item"><span class="dot aut"></span>Autarkie %</span>
+            `
+            }
           </div>
         </section>
 

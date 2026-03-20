@@ -11,6 +11,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf, Sparverlauf, Monatsreport (Monat-Tab) und Lifetime-Sensoren
 - Hover-Tooltips in den Charts (Maus ueber Diagramm zeigt Einzelwerte)
+- Tagesverlauf umschaltbar zwischen Linien- und Balkenansicht
 
 ## Installation
 
