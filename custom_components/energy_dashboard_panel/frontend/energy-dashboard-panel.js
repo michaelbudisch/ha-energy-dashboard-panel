@@ -139,6 +139,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendChartModeLoaded = false;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._uiConfig = {};
+    this._uiConfigLoaded = false;
+    this._settingsOpen = false;
+    this._settingsDraft = null;
+    this._settingsError = "";
     this._gridStatusState = "idle";
     this._renderFrame = 0;
     this._renderTimeout = 0;
@@ -261,6 +266,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._cachedAutoWeatherEntity = null;
     this._themeLoaded = false;
     this._trendChartModeLoaded = false;
+    this._uiConfigLoaded = false;
+    this._settingsOpen = false;
+    this._settingsDraft = null;
+    this._settingsError = "";
     this._hasRenderedTemplate = false;
     this._requestRender({ immediate: true, full: true });
   }
@@ -472,8 +481,158 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ctx.restore();
   }
 
+  _uiConfigStorageKey() {
+    const path = this._panel?.url_path || this._panel?.path || "default";
+    return `energy_dashboard_panel_ui_config::${path}`;
+  }
+
+  _isObject(raw) {
+    return Boolean(raw) && typeof raw === "object" && !Array.isArray(raw);
+  }
+
+  _cleanEntityId(raw) {
+    const txt = String(raw ?? "").trim();
+    return txt || null;
+  }
+
+  _cleanText(raw) {
+    const txt = String(raw ?? "").trim();
+    return txt || null;
+  }
+
+  _normalizeUiConfig(raw) {
+    if (!this._isObject(raw)) {
+      return {};
+    }
+    const cfg = {};
+
+    const setText = (key) => {
+      if (Object.prototype.hasOwnProperty.call(raw, key)) {
+        cfg[key] = this._cleanText(raw[key]);
+      }
+    };
+    const setEntity = (key) => {
+      if (Object.prototype.hasOwnProperty.call(raw, key)) {
+        cfg[key] = this._cleanEntityId(raw[key]);
+      }
+    };
+
+    setText("title");
+    setText("background_image");
+    setText("weather_location");
+    setEntity("weather_entity");
+    setEntity("price_entity");
+    setEntity("price_fallback_entity");
+
+    if (this._isObject(raw.sensors)) {
+      cfg.sensors = {};
+      Object.keys(FALLBACK_SENSORS).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(raw.sensors, key)) {
+          cfg.sensors[key] = this._cleanEntityId(raw.sensors[key]);
+        }
+      });
+    }
+
+    if (this._isObject(raw.price_sensors)) {
+      cfg.price_sensors = {};
+      Object.keys(FALLBACK_PRICE_SENSORS).forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(raw.price_sensors, key)) {
+          cfg.price_sensors[key] = this._cleanEntityId(raw.price_sensors[key]);
+        }
+      });
+    }
+
+    if (typeof raw.use_signed_battery_power === "boolean") {
+      cfg.use_signed_battery_power = raw.use_signed_battery_power;
+    }
+    if (typeof raw.invert_battery_power_sign === "boolean") {
+      cfg.invert_battery_power_sign = raw.invert_battery_power_sign;
+    }
+    if (typeof raw.invert_load_power_sign === "boolean") {
+      cfg.invert_load_power_sign = raw.invert_load_power_sign;
+    }
+
+    const gridMode = String(raw.grid_sensor_mode || "").trim().toLowerCase();
+    if (gridMode === "auto" || gridMode === "signed" || gridMode === "dual") {
+      cfg.grid_sensor_mode = gridMode;
+    }
+    const batteryMode = String(raw.battery_sensor_mode || "").trim().toLowerCase();
+    if (batteryMode === "auto" || batteryMode === "signed" || batteryMode === "dual") {
+      cfg.battery_sensor_mode = batteryMode;
+    }
+
+    if (Array.isArray(raw.extra_chips)) {
+      cfg.extra_chips = raw.extra_chips
+        .filter((item) => this._isObject(item))
+        .map((item) => ({
+          key: this._cleanText(item.key),
+          label: this._cleanText(item.label),
+          entity: this._cleanEntityId(item.entity),
+          accent: this._cleanText(item.accent),
+        }))
+        .filter((item) => item.entity);
+    }
+
+    return cfg;
+  }
+
+  _ensureUiConfig() {
+    if (this._uiConfigLoaded) {
+      return;
+    }
+    let parsed = {};
+    try {
+      const raw = window.localStorage.getItem(this._uiConfigStorageKey());
+      parsed = raw ? JSON.parse(raw) : {};
+    } catch (error) {
+      parsed = {};
+    }
+    this._uiConfig = this._normalizeUiConfig(parsed);
+    this._uiConfigLoaded = true;
+  }
+
+  _saveUiConfig() {
+    try {
+      window.localStorage.setItem(this._uiConfigStorageKey(), JSON.stringify(this._uiConfig || {}));
+    } catch (error) {
+      // Ignore storage failures.
+    }
+  }
+
+  _clearUiConfig() {
+    this._uiConfig = {};
+    try {
+      window.localStorage.removeItem(this._uiConfigStorageKey());
+    } catch (error) {
+      // Ignore storage failures.
+    }
+  }
+
+  _mergePanelConfig(baseRaw, overrideRaw) {
+    const base = this._isObject(baseRaw) ? baseRaw : {};
+    const override = this._isObject(overrideRaw) ? overrideRaw : {};
+    const merged = { ...base, ...override };
+    merged.sensors = {
+      ...(this._isObject(base.sensors) ? base.sensors : {}),
+      ...(this._isObject(override.sensors) ? override.sensors : {}),
+    };
+    merged.price_sensors = {
+      ...(this._isObject(base.price_sensors) ? base.price_sensors : {}),
+      ...(this._isObject(override.price_sensors) ? override.price_sensors : {}),
+    };
+    if (Array.isArray(override.extra_chips)) {
+      merged.extra_chips = override.extra_chips;
+    } else if (Array.isArray(base.extra_chips)) {
+      merged.extra_chips = base.extra_chips;
+    } else {
+      merged.extra_chips = [];
+    }
+    return merged;
+  }
+
   _panelConfig() {
-    return this._panel?.config || {};
+    this._ensureUiConfig();
+    return this._mergePanelConfig(this._panel?.config || {}, this._uiConfig);
   }
 
   _storageKey() {
@@ -556,6 +715,381 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     this._scheduleChartRedraw();
     this._requestRender({ immediate: true, full: true });
+  }
+
+  _escapeHtml(raw) {
+    return String(raw ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  _settingsDraftFromConfig(cfgRaw) {
+    const cfg = this._isObject(cfgRaw) ? cfgRaw : {};
+    const sensors = {
+      ...FALLBACK_SENSORS,
+      ...(this._isObject(cfg.sensors) ? cfg.sensors : {}),
+    };
+    const priceSensors = {
+      ...FALLBACK_PRICE_SENSORS,
+      ...(this._isObject(cfg.price_sensors) ? cfg.price_sensors : {}),
+    };
+    return {
+      title: String(cfg.title || ""),
+      background_image: String(cfg.background_image || ""),
+      weather_entity: String(cfg.weather_entity || ""),
+      weather_location: String(cfg.weather_location || ""),
+      price_entity: String(cfg.price_entity || ""),
+      price_fallback_entity: String(cfg.price_fallback_entity || ""),
+      grid_sensor_mode: this._normalizeSensorMode(cfg.grid_sensor_mode),
+      battery_sensor_mode: this._normalizeSensorMode(cfg.battery_sensor_mode),
+      use_signed_battery_power: Boolean(cfg.use_signed_battery_power),
+      invert_battery_power_sign: Boolean(cfg.invert_battery_power_sign),
+      invert_load_power_sign: Boolean(cfg.invert_load_power_sign),
+      sensors,
+      price_sensors: priceSensors,
+      extra_chips_json: Array.isArray(cfg.extra_chips)
+        ? JSON.stringify(cfg.extra_chips, null, 2)
+        : "[]",
+    };
+  }
+
+  _openSettingsEditor() {
+    this._settingsDraft = this._settingsDraftFromConfig(this._panelConfig());
+    this._settingsError = "";
+    this._settingsOpen = true;
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _closeSettingsEditor() {
+    this._settingsOpen = false;
+    this._settingsDraft = null;
+    this._settingsError = "";
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _settingsInputValue(form, name) {
+    const value = form?.elements?.namedItem(name)?.value;
+    return String(value ?? "").trim();
+  }
+
+  _settingsCheckboxValue(form, name) {
+    const el = form?.elements?.namedItem(name);
+    return Boolean(el?.checked);
+  }
+
+  _buildUiConfigFromSettingsForm(form) {
+    const toEntity = (name) => {
+      const txt = this._settingsInputValue(form, name);
+      return txt || null;
+    };
+    const toText = (name) => {
+      const txt = this._settingsInputValue(form, name);
+      return txt || null;
+    };
+    const rawExtra = this._settingsInputValue(form, "extra_chips_json");
+    let parsedExtras = [];
+    if (rawExtra) {
+      try {
+        const parsed = JSON.parse(rawExtra);
+        if (!Array.isArray(parsed)) {
+          return { error: "Extra Chips muss ein JSON-Array sein." };
+        }
+        parsedExtras = parsed;
+      } catch (error) {
+        return { error: "Extra Chips JSON ist ungültig." };
+      }
+    }
+
+    const ui = {
+      title: toText("title"),
+      background_image: toText("background_image"),
+      weather_entity: toEntity("weather_entity"),
+      weather_location: toText("weather_location"),
+      price_entity: toEntity("price_entity"),
+      price_fallback_entity: toEntity("price_fallback_entity"),
+      grid_sensor_mode: this._settingsInputValue(form, "grid_sensor_mode") || "auto",
+      battery_sensor_mode: this._settingsInputValue(form, "battery_sensor_mode") || "auto",
+      use_signed_battery_power: this._settingsCheckboxValue(form, "use_signed_battery_power"),
+      invert_battery_power_sign: this._settingsCheckboxValue(form, "invert_battery_power_sign"),
+      invert_load_power_sign: this._settingsCheckboxValue(form, "invert_load_power_sign"),
+      sensors: {},
+      price_sensors: {},
+      extra_chips: parsedExtras,
+    };
+
+    Object.keys(FALLBACK_SENSORS).forEach((key) => {
+      ui.sensors[key] = toEntity(`sensor_${key}`);
+    });
+    Object.keys(FALLBACK_PRICE_SENSORS).forEach((key) => {
+      ui.price_sensors[key] = toEntity(`price_${key}`);
+    });
+
+    return { value: this._normalizeUiConfig(ui) };
+  }
+
+  _saveSettingsFromForm() {
+    const form = this.shadowRoot?.querySelector("#settings-form");
+    if (!form) {
+      return;
+    }
+    const result = this._buildUiConfigFromSettingsForm(form);
+    if (result.error) {
+      this._settingsError = result.error;
+      this._requestRender({ immediate: true, full: true });
+      return;
+    }
+    this._uiConfig = result.value || {};
+    this._saveUiConfig();
+    this._settingsError = "";
+    this._settingsOpen = false;
+    this._settingsDraft = null;
+    this._positions = null;
+    this._trendHoverIndex = null;
+    this._savingsHoverIndex = null;
+    this._trendKey = null;
+    this._trendData = null;
+    this._trendCache.clear();
+    this._lastHassSignature = "";
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _resetSettingsToYamlFallback() {
+    this._clearUiConfig();
+    this._settingsOpen = false;
+    this._settingsDraft = null;
+    this._settingsError = "";
+    this._positions = null;
+    this._trendHoverIndex = null;
+    this._savingsHoverIndex = null;
+    this._trendKey = null;
+    this._trendData = null;
+    this._trendCache.clear();
+    this._lastHassSignature = "";
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _entityDatalistOptions(prefix = "") {
+    const states = this._hass?.states || {};
+    const ids = Object.keys(states)
+      .filter((id) => (prefix ? id.startsWith(prefix) : true))
+      .sort((a, b) => a.localeCompare(b));
+    return ids.map((id) => `<option value="${this._escapeHtml(id)}"></option>`).join("");
+  }
+
+  _settingsInputRow({
+    label,
+    name,
+    value = "",
+    listId = "",
+    placeholder = "",
+    kind = "text",
+    checked = false,
+    options = [],
+  }) {
+    if (kind === "checkbox") {
+      return `
+        <label class="settings-check">
+          <input type="checkbox" name="${this._escapeHtml(name)}" ${checked ? "checked" : ""}>
+          <span>${this._escapeHtml(label)}</span>
+        </label>
+      `;
+    }
+    if (kind === "select") {
+      const opts = options
+        .map(
+          (opt) =>
+            `<option value="${this._escapeHtml(opt.value)}" ${
+              String(opt.value) === String(value) ? "selected" : ""
+            }>${this._escapeHtml(opt.label)}</option>`
+        )
+        .join("");
+      return `
+        <label class="settings-row">
+          <span>${this._escapeHtml(label)}</span>
+          <select name="${this._escapeHtml(name)}">${opts}</select>
+        </label>
+      `;
+    }
+    return `
+      <label class="settings-row">
+        <span>${this._escapeHtml(label)}</span>
+        <input
+          type="text"
+          name="${this._escapeHtml(name)}"
+          value="${this._escapeHtml(value)}"
+          ${listId ? `list="${this._escapeHtml(listId)}"` : ""}
+          placeholder="${this._escapeHtml(placeholder)}"
+          autocomplete="off"
+          spellcheck="false"
+        >
+      </label>
+    `;
+  }
+
+  _settingsModalHTML(draft, options) {
+    const sensors = this._isObject(draft?.sensors) ? draft.sensors : {};
+    const priceSensors = this._isObject(draft?.price_sensors) ? draft.price_sensors : {};
+    return `
+      <div class="settings-overlay" data-action="close-settings-overlay">
+        <section class="settings-dialog" role="dialog" aria-modal="true" aria-label="Dashboard Einstellungen">
+          <header class="settings-head">
+            <div class="settings-title">Dashboard Einstellungen</div>
+            <button class="btn ghost" data-action="close-settings">Schließen</button>
+          </header>
+          ${
+            this._settingsError
+              ? `<div class="settings-error">${this._escapeHtml(this._settingsError)}</div>`
+              : ""
+          }
+          <form id="settings-form" class="settings-form" onsubmit="return false;">
+            <section class="settings-block">
+              <h4>Allgemein</h4>
+              <div class="settings-note">Hinweis: <code>tibber_api_token</code> bleibt aktuell in <code>configuration.yaml</code>.</div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({
+                  label: "Titel",
+                  name: "title",
+                  value: draft?.title || "",
+                  placeholder: "Energie",
+                })}
+                ${this._settingsInputRow({
+                  label: "Hintergrundbild URL",
+                  name: "background_image",
+                  value: draft?.background_image || "",
+                  placeholder: "/energy_dashboard_panel_panel/dashboard.png?v=1",
+                })}
+                ${this._settingsInputRow({
+                  label: "Wetter Entity",
+                  name: "weather_entity",
+                  value: draft?.weather_entity || "",
+                  listId: "edp-weather-options",
+                  placeholder: "weather.home",
+                })}
+                ${this._settingsInputRow({
+                  label: "Wetter Ort (Open-Meteo)",
+                  name: "weather_location",
+                  value: draft?.weather_location || "",
+                  placeholder: "Berlin,DE",
+                })}
+                ${this._settingsInputRow({
+                  label: "Preis Entity",
+                  name: "price_entity",
+                  value: draft?.price_entity || "",
+                  listId: "edp-entity-options",
+                  placeholder: "sensor.dein_preis",
+                })}
+                ${this._settingsInputRow({
+                  label: "Preis Fallback Entity",
+                  name: "price_fallback_entity",
+                  value: draft?.price_fallback_entity || "",
+                  listId: "edp-entity-options",
+                  placeholder: "sensor.dein_preis_fallback",
+                })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Sensor Modi</h4>
+              <div class="settings-grid settings-grid-tight">
+                ${this._settingsInputRow({
+                  label: "Grid Sensor Modus",
+                  name: "grid_sensor_mode",
+                  kind: "select",
+                  value: draft?.grid_sensor_mode || "auto",
+                  options: [
+                    { value: "auto", label: "auto" },
+                    { value: "signed", label: "signed" },
+                    { value: "dual", label: "dual" },
+                  ],
+                })}
+                ${this._settingsInputRow({
+                  label: "Batterie Sensor Modus",
+                  name: "battery_sensor_mode",
+                  kind: "select",
+                  value: draft?.battery_sensor_mode || "auto",
+                  options: [
+                    { value: "auto", label: "auto" },
+                    { value: "signed", label: "signed" },
+                    { value: "dual", label: "dual" },
+                  ],
+                })}
+                ${this._settingsInputRow({
+                  label: "Signed Batterie nutzen",
+                  name: "use_signed_battery_power",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.use_signed_battery_power),
+                })}
+                ${this._settingsInputRow({
+                  label: "Batterie Vorzeichen invertieren",
+                  name: "invert_battery_power_sign",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.invert_battery_power_sign),
+                })}
+                ${this._settingsInputRow({
+                  label: "Load Vorzeichen invertieren",
+                  name: "invert_load_power_sign",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.invert_load_power_sign),
+                })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Sensor Mapping</h4>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "solar_power", name: "sensor_solar_power", value: sensors.solar_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "load_power", name: "sensor_load_power", value: sensors.load_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "grid_power", name: "sensor_grid_power", value: sensors.grid_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "grid_import_power", name: "sensor_grid_import_power", value: sensors.grid_import_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "grid_export_power", name: "sensor_grid_export_power", value: sensors.grid_export_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "battery_power", name: "sensor_battery_power", value: sensors.battery_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "battery_charge_power", name: "sensor_battery_charge_power", value: sensors.battery_charge_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "battery_discharge_power", name: "sensor_battery_discharge_power", value: sensors.battery_discharge_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "battery_soc", name: "sensor_battery_soc", value: sensors.battery_soc || "", listId: "edp-sensor-options" })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Preis Sensoren (optional)</h4>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "current", name: "price_current", value: priceSensors.current || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "next_1h", name: "price_next_1h", value: priceSensors.next_1h || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "next_2h", name: "price_next_2h", value: priceSensors.next_2h || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "next_3h", name: "price_next_3h", value: priceSensors.next_3h || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "next_4h", name: "price_next_4h", value: priceSensors.next_4h || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "next_5h", name: "price_next_5h", value: priceSensors.next_5h || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "min_today", name: "price_min_today", value: priceSensors.min_today || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "max_today", name: "price_max_today", value: priceSensors.max_today || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "level", name: "price_level", value: priceSensors.level || "", listId: "edp-sensor-options" })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Extra Chips (JSON)</h4>
+              <label class="settings-row">
+                <span>Array aus key/label/entity/accent</span>
+                <textarea
+                  name="extra_chips_json"
+                  rows="6"
+                  spellcheck="false"
+                >${this._escapeHtml(draft?.extra_chips_json || "[]")}</textarea>
+              </label>
+            </section>
+          </form>
+          <footer class="settings-actions">
+            <button class="btn ghost" data-action="close-settings">Abbrechen</button>
+            <button class="btn warn" data-action="reset-settings-yaml">YAML Fallback</button>
+            <button class="btn primary" data-action="save-settings">Speichern</button>
+          </footer>
+          <datalist id="edp-sensor-options">${options.sensorOptions}</datalist>
+          <datalist id="edp-weather-options">${options.weatherOptions}</datalist>
+          <datalist id="edp-entity-options">${options.entityOptions}</datalist>
+        </section>
+      </div>
+    `;
   }
 
   _clamp(value, min, max) {
@@ -3635,6 +4169,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const toggleBtn = this.shadowRoot.querySelector("[data-action='toggle-edit']");
     const resetBtn = this.shadowRoot.querySelector("[data-action='reset-layout']");
     const themeToggle = this.shadowRoot.querySelector("[data-action='toggle-theme']");
+    const openSettingsBtn = this.shadowRoot.querySelector("[data-action='open-settings']");
+    const settingsOverlay = this.shadowRoot.querySelector("[data-action='close-settings-overlay']");
+    const closeSettingsBtns = this.shadowRoot.querySelectorAll("[data-action='close-settings']");
+    const saveSettingsBtn = this.shadowRoot.querySelector("[data-action='save-settings']");
+    const resetSettingsBtn = this.shadowRoot.querySelector("[data-action='reset-settings-yaml']");
 
     toggleBtn?.addEventListener("click", () => {
       this._editMode = !this._editMode;
@@ -3650,6 +4189,26 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     themeToggle?.addEventListener("change", (ev) => {
       this._setThemeDark(Boolean(ev?.target?.checked));
+    });
+
+    openSettingsBtn?.addEventListener("click", () => {
+      this._openSettingsEditor();
+    });
+    settingsOverlay?.addEventListener("click", (ev) => {
+      if (ev.target === settingsOverlay) {
+        this._closeSettingsEditor();
+      }
+    });
+    closeSettingsBtns.forEach((btn) =>
+      btn.addEventListener("click", () => {
+        this._closeSettingsEditor();
+      })
+    );
+    saveSettingsBtn?.addEventListener("click", () => {
+      this._saveSettingsFromForm();
+    });
+    resetSettingsBtn?.addEventListener("click", () => {
+      this._resetSettingsToYamlFallback();
     });
 
     this.shadowRoot.querySelectorAll("[data-action='trend-range']").forEach((btn) => {
@@ -3837,6 +4396,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const trendModeLine = this._trendChartMode === TREND_CHART_MODES.line;
     const trendModeBars = this._trendChartMode === TREND_CHART_MODES.bars;
     const themeDark = this._themeDark;
+    const settingsDraft = this._settingsDraft || this._settingsDraftFromConfig(cfg);
+    const settingsOptions = this._settingsOpen
+      ? {
+          sensorOptions: this._entityDatalistOptions("sensor."),
+          weatherOptions: this._entityDatalistOptions("weather."),
+          entityOptions: this._entityDatalistOptions(""),
+        }
+      : { sensorOptions: "", weatherOptions: "", entityOptions: "" };
 
     const liveModel = {
       weather,
@@ -4215,8 +4782,174 @@ class HaEnergyDashboardPanel extends HTMLElement {
           background: rgba(255, 255, 255, 0.74);
         }
 
+        .btn.warn {
+          border-color: rgba(227, 152, 56, 0.4);
+          background: linear-gradient(180deg, #fff3df 0%, #ffe6c7 100%);
+          color: #8e5414;
+        }
+
         .btn:active {
           transform: translateY(1px);
+        }
+
+        .settings-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 50;
+          background: rgba(8, 14, 22, 0.56);
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          padding: 16px;
+          overflow: auto;
+        }
+
+        .settings-dialog {
+          width: min(1040px, 100%);
+          max-height: calc(100vh - 32px);
+          overflow: auto;
+          border-radius: 16px;
+          border: 1px solid var(--ed-border);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 250, 255, 0.93));
+          box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+          padding: 12px;
+        }
+
+        .panel.theme-dark .settings-dialog {
+          background: linear-gradient(180deg, rgba(19, 29, 43, 0.97), rgba(15, 24, 36, 0.95));
+          border-color: rgba(149, 171, 193, 0.3);
+        }
+
+        .settings-head {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+
+        .settings-title {
+          font-weight: 700;
+          font-size: 0.95rem;
+          color: var(--ed-text);
+        }
+
+        .settings-error {
+          margin-bottom: 8px;
+          border-radius: 10px;
+          border: 1px solid rgba(203, 81, 81, 0.42);
+          background: rgba(232, 87, 87, 0.14);
+          padding: 8px 10px;
+          font-size: 0.78rem;
+          color: #c63737;
+          font-weight: 600;
+        }
+
+        .settings-form {
+          display: grid;
+          gap: 10px;
+        }
+
+        .settings-block {
+          border-radius: 12px;
+          border: 1px solid var(--ed-border);
+          background: rgba(255, 255, 255, 0.72);
+          padding: 10px;
+        }
+
+        .panel.theme-dark .settings-block {
+          background: rgba(21, 33, 47, 0.72);
+        }
+
+        .settings-block h4 {
+          margin: 0 0 8px 0;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--ed-muted);
+        }
+
+        .settings-note {
+          margin: 0 0 8px 0;
+          font-size: 0.72rem;
+          color: var(--ed-muted);
+        }
+
+        .settings-note code {
+          font-size: 0.7rem;
+          border-radius: 6px;
+          padding: 1px 5px;
+          border: 1px solid rgba(80, 102, 123, 0.22);
+          background: rgba(229, 238, 246, 0.68);
+          color: var(--ed-text);
+        }
+
+        .settings-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 8px;
+        }
+
+        .settings-grid-tight {
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+
+        .settings-row {
+          display: grid;
+          gap: 5px;
+          font-size: 0.72rem;
+          color: var(--ed-muted);
+        }
+
+        .settings-row span {
+          font-weight: 600;
+        }
+
+        .settings-row input,
+        .settings-row select,
+        .settings-row textarea {
+          border-radius: 10px;
+          border: 1px solid rgba(24, 40, 57, 0.18);
+          background: rgba(255, 255, 255, 0.9);
+          color: #1a2c3b;
+          font-size: 0.77rem;
+          padding: 7px 8px;
+          font-family: inherit;
+        }
+
+        .panel.theme-dark .settings-row input,
+        .panel.theme-dark .settings-row select,
+        .panel.theme-dark .settings-row textarea {
+          border-color: rgba(149, 171, 193, 0.28);
+          background: rgba(17, 27, 40, 0.9);
+          color: #e4eef8;
+        }
+
+        .settings-row textarea {
+          min-height: 104px;
+          resize: vertical;
+        }
+
+        .settings-check {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          font-size: 0.74rem;
+          color: var(--ed-text);
+          min-height: 34px;
+        }
+
+        .settings-check input {
+          width: 16px;
+          height: 16px;
+        }
+
+        .settings-actions {
+          margin-top: 10px;
+          display: flex;
+          gap: 8px;
+          justify-content: flex-end;
+          flex-wrap: wrap;
         }
 
         .scene {
@@ -4852,6 +5585,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 <span class="track"><span class="thumb"></span></span>
                 <span>Dark</span>
               </label>
+              <button class="btn ghost" data-action="open-settings">Einstellungen</button>
               <button class="btn ${this._editMode ? "primary" : "ghost"}" data-action="toggle-edit">
                 ${this._editMode ? "Fertig" : "Layout bearbeiten"}
               </button>
@@ -5243,6 +5977,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">background</div><div class="v">${bgImage || "nicht gesetzt"}</div>
           </div>
         </details>
+        ${this._settingsOpen ? this._settingsModalHTML(settingsDraft, settingsOptions) : ""}
       </div>
     `;
 

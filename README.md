@@ -10,6 +10,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
 - Hover-Tooltips in den Charts (Maus ueber Diagramm = Live-Werte je Punkt)
 - Umschaltbarer Tagesverlauf: Linien- oder Balkenmodus (pro Intervall)
+- Lokaler Einstellungsdialog im Panel (YAML bleibt Fallback)
 
 ## Screenshots
 
