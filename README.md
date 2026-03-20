@@ -1,4 +1,4 @@
-# Energy Dashboard Panel (Home Assistant)
+﻿# Energy Dashboard Panel (Home Assistant)
 
 Custom Panel fuer Home Assistant mit Fokus auf:
 
@@ -10,9 +10,9 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 
 ## Screenshots
 
-![Dashboard Screenshot 1](docs/images/dashboard-1.png)
-![Dashboard Screenshot 2](docs/images/dashboard-2.png)
-![Dashboard Screenshot 3](docs/images/dashboard-3.png)
+![Dashboard Screenshot 1](docs/images/dashboard-1.jpeg)
+![Dashboard Screenshot 2](docs/images/dashboard-2.jpeg)
+![Dashboard Screenshot 3](docs/images/dashboard-3.jpeg)
 
 ## Projektstruktur
 
