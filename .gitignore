@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Home Assistant / Editor
+.storage/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local secrets
+secrets.yaml
+*.secret
