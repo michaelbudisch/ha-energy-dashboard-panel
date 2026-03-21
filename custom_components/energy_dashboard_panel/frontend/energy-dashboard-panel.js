@@ -153,6 +153,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._savingsHoverIndex = null;
     this._priceHoverIndex = null;
     this._priceChartRows = [];
+    this._priceChartRangeStart = null;
+    this._priceChartRangeEnd = null;
     this._uiConfig = {};
     this._uiConfigLoaded = false;
     this._uiConfigBackendSyncStarted = false;
@@ -417,6 +419,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._chartRedrawFrame = window.requestAnimationFrame(() => {
       this._chartRedrawFrame = 0;
       this._drawTrendChart();
+      this._drawTrendMixChart();
       this._drawSavingsChart();
       this._drawPriceChart();
     });
@@ -438,9 +441,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return;
     }
     const trend = this.shadowRoot?.querySelector("#trend-canvas");
+    const trendMix = this.shadowRoot?.querySelector("#trend-mix-canvas");
     const savings = this.shadowRoot?.querySelector("#savings-canvas");
     const price = this.shadowRoot?.querySelector("#price-canvas");
-    const observed = [trend, savings, price].filter(Boolean);
+    const observed = [trend, trendMix, savings, price].filter(Boolean);
     if (observed.length === 0) {
       return;
     }
@@ -479,6 +483,54 @@ class HaEnergyDashboardPanel extends HTMLElement {
       canvas.style.cursor = "crosshair";
 
       canvas.addEventListener("pointermove", (event) => {
+        if (type === "price") {
+          const rows = Array.isArray(this._priceChartRows) ? this._priceChartRows : [];
+          let idx = null;
+          if (rows.length > 0 && event) {
+            const rect = canvas.getBoundingClientRect();
+            const cssWidth = canvas.clientWidth || rect.width || 0;
+            const innerWidth = cssWidth - pad.left - pad.right;
+            const x = event.clientX - rect.left;
+            if (
+              Number.isFinite(innerWidth) &&
+              innerWidth > 0 &&
+              Number.isFinite(x) &&
+              x >= pad.left &&
+              x <= pad.left + innerWidth
+            ) {
+              const startTs = Number.isFinite(this._priceChartRangeStart)
+                ? this._priceChartRangeStart
+                : rows[0]?.t;
+              const fallbackEnd = rows[rows.length - 1]?.t;
+              const endCandidate = Number.isFinite(this._priceChartRangeEnd)
+                ? this._priceChartRangeEnd
+                : fallbackEnd;
+              const endTs = Number.isFinite(endCandidate) && endCandidate > startTs
+                ? endCandidate
+                : fallbackEnd;
+              if (Number.isFinite(startTs) && Number.isFinite(endTs) && endTs > startTs) {
+                const ratio = this._clamp((x - pad.left) / innerWidth, 0, 1);
+                const targetTs = startTs + ratio * (endTs - startTs);
+                let bestIdx = 0;
+                let bestDist = Number.POSITIVE_INFINITY;
+                for (let i = 0; i < rows.length; i += 1) {
+                  const dist = Math.abs(rows[i].t - targetTs);
+                  if (dist < bestDist) {
+                    bestDist = dist;
+                    bestIdx = i;
+                  }
+                }
+                idx = bestIdx;
+              }
+            }
+          }
+          if (this._priceHoverIndex !== idx) {
+            this._priceHoverIndex = idx;
+            this._scheduleChartRedraw();
+          }
+          return;
+        }
+
         const livePoints =
           type === "price"
             ? this._priceChartRows
@@ -2680,6 +2732,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
         label: "Kein Preis-Sensor",
         detail: "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
         chartRows: [],
+        chartStartTs: null,
+        chartEndTs: null,
         chartMin: null,
         chartNow: null,
         chartMax: null,
@@ -2728,12 +2782,20 @@ class HaEnergyDashboardPanel extends HTMLElement {
       sensorResolutionMin !== null && sensorResolutionMin > 0
         ? sensorResolutionMin * 60 * 1000
         : this._inferPriceResolutionMs(uniqueRows);
+    const dayStartTs = todayStart;
+    const tomorrowTs = tomorrowStart;
+    const dayEndTs = dayStartTs + 48 * 60 * 60 * 1000;
+    const hasForecastRows = attrRows.length > 0;
+    const hasTomorrowRows = uniqueRows.some((row) => row.t >= tomorrowTs && row.t < dayEndTs);
+    const horizonEndTs = hasForecastRows
+      ? (hasTomorrowRows ? dayEndTs : tomorrowTs)
+      : now + 24 * 60 * 60 * 1000;
     const lookbackMs = Math.max(
       5 * 60 * 1000,
       Math.min(2 * 60 * 60 * 1000, resolutionMs + 2 * 60 * 1000)
     );
     const futureRows = uniqueRows.filter(
-      (r) => r.t >= now - lookbackMs && r.t <= now + 24 * 60 * 60 * 1000
+      (r) => r.t >= now - lookbackMs && r.t <= horizonEndTs
     );
     const prices = futureRows.map((r) => r.p);
     let cheapEur = prices.length >= 2 ? this._quantile(prices, 0.25) : null;
@@ -2774,20 +2836,40 @@ class HaEnergyDashboardPanel extends HTMLElement {
       action = levelSignal.action;
     }
 
+    const nextRows = uniqueRows.filter((row) => row.t >= now && row.t <= horizonEndTs);
+    const markerRows = nextRows.length > 0 ? nextRows : futureRows;
     const cheapestRow =
-      futureRows.length > 0 ? futureRows.reduce((a, b) => (a.p <= b.p ? a : b)) : null;
+      markerRows.length > 0 ? markerRows.reduce((a, b) => (a.p <= b.p ? a : b)) : null;
     const mostExpensiveRow =
-      futureRows.length > 0 ? futureRows.reduce((a, b) => (a.p >= b.p ? a : b)) : null;
+      markerRows.length > 0 ? markerRows.reduce((a, b) => (a.p >= b.p ? a : b)) : null;
 
-    const chartRowsWindow = uniqueRows.filter(
-      (row) => row.t >= now - 12 * 60 * 60 * 1000 && row.t <= now + 24 * 60 * 60 * 1000
-    );
-    const chartRowsEur =
-      chartRowsWindow.length >= 2
-        ? chartRowsWindow
-        : futureRows.length >= 2
+    let chartStartTs = null;
+    let chartEndTs = null;
+    let chartRowsEur = [];
+    if (hasForecastRows) {
+      chartStartTs = dayStartTs;
+      chartEndTs = hasTomorrowRows ? dayEndTs : tomorrowTs;
+      chartRowsEur = uniqueRows.filter((row) => row.t >= chartStartTs && row.t < chartEndTs);
+    } else {
+      chartRowsEur =
+        futureRows.length >= 2
           ? futureRows
           : uniqueRows;
+    }
+    if (chartRowsEur.length === 0) {
+      chartRowsEur = uniqueRows;
+    }
+    if (chartRowsEur.length > 0) {
+      if (!Number.isFinite(chartStartTs)) {
+        chartStartTs = chartRowsEur[0].t;
+      }
+      if (!Number.isFinite(chartEndTs)) {
+        chartEndTs = chartRowsEur[chartRowsEur.length - 1].t;
+      }
+      if (chartEndTs <= chartStartTs) {
+        chartEndTs = chartRowsEur[chartRowsEur.length - 1].t;
+      }
+    }
     const chartRows = chartRowsEur.map((row) => ({
       t: row.t,
       p: this._priceFromEur(row.p, displayUnit),
@@ -2800,9 +2882,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const chartNowEur = nowPriceEur;
 
     const resolutionLabel = `${Math.max(1, Math.round(resolutionMs / (60 * 1000)))}m`;
+    const horizonLabel = hasForecastRows ? (hasTomorrowRows ? "48h" : "24h") : null;
     const sourceText =
       attrRows.length > 0
-        ? `Tibber 24h Forecast (${resolutionLabel})`
+        ? `Tibber Forecast (${horizonLabel}, ${resolutionLabel})`
         : fallbackRows.length > 0
           ? "Preis nächste 1h-5h"
           : minTodayEur !== null || maxTodayEur !== null
@@ -2825,6 +2908,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
         label: "Preis-Sensor ohne Werte",
         detail: currentEntityId || "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
         chartRows: [],
+        chartStartTs: null,
+        chartEndTs: null,
         chartMin: null,
         chartNow: null,
         chartMax: null,
@@ -2843,9 +2928,23 @@ class HaEnergyDashboardPanel extends HTMLElement {
       minToday: this._priceFromEur(minTodayEur, displayUnit),
       maxToday: this._priceFromEur(maxTodayEur, displayUnit),
       levelText: levelState ?? "--",
+      cheapestPoint: cheapestRow
+        ? {
+            t: cheapestRow.t,
+            p: this._priceFromEur(cheapestRow.p, displayUnit),
+          }
+        : null,
+      expensivePoint: mostExpensiveRow
+        ? {
+            t: mostExpensiveRow.t,
+            p: this._priceFromEur(mostExpensiveRow.p, displayUnit),
+          }
+        : null,
       sourceText,
       action,
       chartRows,
+      chartStartTs,
+      chartEndTs,
       chartMin: this._priceFromEur(chartMinEur, displayUnit),
       chartNow: this._priceFromEur(chartNowEur, displayUnit),
       chartMax: this._priceFromEur(chartMaxEur, displayUnit),
@@ -4151,6 +4250,137 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
   }
 
+  _trendMixSummary(data = this._trendData) {
+    const empty = {
+      available: false,
+      totalKwh: 0,
+      solarKwh: 0,
+      batteryKwh: 0,
+      gridKwh: 0,
+      solarPct: 0,
+      batteryPct: 0,
+      gridPct: 0,
+      autarkyPct: null,
+    };
+    if (!data || !Array.isArray(data.points) || data.points.length === 0) {
+      return empty;
+    }
+
+    const stepMs = Math.max(TREND_STEP_MIN_MS, Number(data.stepMs) || TREND_STEP_MIN_MS);
+    const stepHours = stepMs / (60 * 60 * 1000);
+    let solarKwh = 0;
+    let batteryKwh = 0;
+    let gridKwh = 0;
+    let loadKwh = 0;
+
+    data.points.forEach((point) => {
+      const solarW = Math.max(0, Number(point?.solarCover) || 0);
+      const batteryW = Math.max(0, Number(point?.batteryCover) || 0);
+      const gridW = Math.max(0, Number(point?.gridCover) || 0);
+      const loadW = Math.max(0, Number(point?.load) || 0);
+
+      solarKwh += (solarW * stepHours) / 1000;
+      batteryKwh += (batteryW * stepHours) / 1000;
+      gridKwh += (gridW * stepHours) / 1000;
+      if (loadW > 0) {
+        loadKwh += (loadW * stepHours) / 1000;
+      }
+    });
+
+    const splitTotalKwh = Math.max(0, solarKwh + batteryKwh + gridKwh);
+    const totalKwh = loadKwh > 0 ? loadKwh : splitTotalKwh;
+    if (!(totalKwh > 0) && !(splitTotalKwh > 0)) {
+      return empty;
+    }
+
+    const baseKwh = totalKwh > 0 ? totalKwh : splitTotalKwh;
+    const solarPct = baseKwh > 0 ? this._clamp((solarKwh / baseKwh) * 100, 0, 100) : 0;
+    const batteryPct = baseKwh > 0 ? this._clamp((batteryKwh / baseKwh) * 100, 0, 100) : 0;
+    const gridPct = baseKwh > 0 ? this._clamp((gridKwh / baseKwh) * 100, 0, 100) : 0;
+    const autarkyPct = baseKwh > 0 ? this._clamp(((solarKwh + batteryKwh) / baseKwh) * 100, 0, 100) : null;
+
+    return {
+      available: true,
+      totalKwh: baseKwh,
+      solarKwh,
+      batteryKwh,
+      gridKwh,
+      solarPct,
+      batteryPct,
+      gridPct,
+      autarkyPct,
+    };
+  }
+
+  _drawTrendMixChart() {
+    const canvas = this.shadowRoot?.querySelector("#trend-mix-canvas");
+    if (!canvas) {
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    const mix = this._trendMixSummary(this._trendData);
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 280;
+    const cssHeight = canvas.clientHeight || 220;
+    canvas.width = Math.floor(cssWidth * dpr);
+    canvas.height = Math.floor(cssHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (!mix.available) {
+      ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+      ctx.font = "12px Sora, Segoe UI, sans-serif";
+      ctx.fillText(this._trendLoading ? "Lade Mix..." : "Kein Mix verfügbar", 10, 18);
+      return;
+    }
+
+    const centerX = cssWidth / 2;
+    const centerY = cssHeight / 2 - 4;
+    const outerR = Math.max(34, Math.min(cssWidth, cssHeight) * 0.34);
+    const innerR = outerR * 0.62;
+    const ringWidth = outerR - innerR;
+    const slices = [
+      { key: "solar", value: mix.solarKwh, color: "#25b788" },
+      { key: "battery", value: mix.batteryKwh, color: "#7c5cff" },
+      { key: "grid", value: mix.gridKwh, color: "#f29b38" },
+    ];
+    const total = Math.max(0, mix.totalKwh);
+
+    ctx.beginPath();
+    ctx.strokeStyle = this._themeDark ? "rgba(147, 171, 194, 0.2)" : "rgba(45, 68, 89, 0.16)";
+    ctx.lineWidth = ringWidth;
+    ctx.arc(centerX, centerY, innerR + ringWidth / 2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    let start = -Math.PI / 2;
+    slices.forEach((slice) => {
+      if (!(slice.value > 0) || !(total > 0)) {
+        return;
+      }
+      const angle = (slice.value / total) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.strokeStyle = slice.color;
+      ctx.lineWidth = ringWidth;
+      ctx.lineCap = "butt";
+      ctx.arc(centerX, centerY, innerR + ringWidth / 2, start, start + angle);
+      ctx.stroke();
+      start += angle;
+    });
+
+    ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#637789";
+    ctx.font = "600 11px Sora, Segoe UI, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Verbrauch", centerX, centerY - 10);
+    ctx.fillStyle = this._themeDark ? "#e7f1fa" : "#1a2c3b";
+    ctx.font = "700 13px Sora, Segoe UI, sans-serif";
+    ctx.fillText(this._formatEnergyKwh(total), centerX, centerY + 10);
+  }
+
   _drawTrendChart() {
     const canvas = this.shadowRoot?.querySelector("#trend-canvas");
     if (!canvas) {
@@ -4621,6 +4851,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     if (!priceInfo?.available || rows.length < 2) {
       this._priceHoverIndex = null;
+      this._priceChartRangeStart = null;
+      this._priceChartRangeEnd = null;
       ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
       ctx.font = "12px Sora, Segoe UI, sans-serif";
       ctx.fillText("Kein Preisverlauf verfügbar", 10, 18);
@@ -4634,8 +4866,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return;
     }
 
-    const minTs = rows[0].t;
-    const maxTs = rows[rows.length - 1].t;
+    const configuredStartTs = Number(priceInfo.chartStartTs);
+    const configuredEndTs = Number(priceInfo.chartEndTs);
+    const minTs = Number.isFinite(configuredStartTs) ? configuredStartTs : rows[0].t;
+    const fallbackEndTs = rows[rows.length - 1].t;
+    const maxTsCandidate = Number.isFinite(configuredEndTs) ? configuredEndTs : fallbackEndTs;
+    const maxTs = maxTsCandidate > minTs ? maxTsCandidate : fallbackEndTs;
+    this._priceChartRangeStart = minTs;
+    this._priceChartRangeEnd = maxTs;
     const spanTs = Math.max(1, maxTs - minTs);
     const values = rows.map((row) => row.p);
     const minVal = Math.min(...values);
@@ -4648,6 +4886,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     const xAt = (ts) => pad.left + ((ts - minTs) / spanTs) * w;
     const yAt = (price) => pad.top + h - ((price - yMin) / ySpan) * h;
+    const unit = priceInfo.unit || "€/kWh";
 
     ctx.strokeStyle = this._themeDark ? "rgba(142, 165, 186, 0.22)" : "rgba(41, 66, 90, 0.12)";
     ctx.lineWidth = 1;
@@ -4659,20 +4898,34 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ctx.stroke();
     }
 
+    const firstRow = rows[0];
+    const lastRow = rows[rows.length - 1];
+    const chartStartX = xAt(minTs);
+    const chartEndX = xAt(maxTs);
+    const firstX = xAt(firstRow.t);
+    const firstY = yAt(firstRow.p);
+    const lastX = xAt(lastRow.t);
+    const lastY = yAt(lastRow.p);
+
     const areaPath = new Path2D();
+    areaPath.moveTo(chartStartX, firstY);
+    if (firstX > chartStartX) {
+      areaPath.lineTo(firstX, firstY);
+    }
     rows.forEach((row, idx) => {
       const x = xAt(row.t);
       const y = yAt(row.p);
       if (idx === 0) {
-        areaPath.moveTo(x, y);
+        areaPath.lineTo(x, y);
       } else {
         areaPath.lineTo(x, y);
       }
     });
-    const firstX = xAt(rows[0].t);
-    const lastX = xAt(rows[rows.length - 1].t);
-    areaPath.lineTo(lastX, pad.top + h);
-    areaPath.lineTo(firstX, pad.top + h);
+    if (lastX < chartEndX) {
+      areaPath.lineTo(chartEndX, lastY);
+    }
+    areaPath.lineTo(chartEndX, pad.top + h);
+    areaPath.lineTo(chartStartX, pad.top + h);
     areaPath.closePath();
 
     const fillGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
@@ -4682,36 +4935,74 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ctx.fill(areaPath);
 
     ctx.beginPath();
-    rows.forEach((row, idx) => {
-      const x = xAt(row.t);
-      const y = yAt(row.p);
-      if (idx === 0) {
-        ctx.moveTo(x, y);
-      } else {
-        ctx.lineTo(x, y);
-      }
+    ctx.moveTo(chartStartX, firstY);
+    if (firstX > chartStartX) {
+      ctx.lineTo(firstX, firstY);
+    }
+    rows.forEach((row) => {
+      ctx.lineTo(xAt(row.t), yAt(row.p));
     });
+    if (lastX < chartEndX) {
+      ctx.lineTo(chartEndX, lastY);
+    }
     ctx.strokeStyle = this._themeDark ? "#7bc4ff" : "#3aa2ef";
     ctx.lineWidth = 2;
     ctx.stroke();
 
-    const nowTs = Date.now();
-    if (nowTs >= minTs && nowTs <= maxTs) {
-      const nowX = xAt(nowTs);
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = this._themeDark ? "rgba(255, 131, 131, 0.85)" : "rgba(202, 58, 58, 0.72)";
-      ctx.lineWidth = 1.2;
+    const drawVerticalSignal = (ts, pointPrice, color, label, lane = 0) => {
+      if (!Number.isFinite(ts) || ts < minTs || ts > maxTs) {
+        return;
+      }
+      const x = xAt(ts);
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.1;
       ctx.beginPath();
-      ctx.moveTo(nowX, pad.top);
-      ctx.lineTo(nowX, pad.top + h);
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, pad.top + h);
       ctx.stroke();
       ctx.setLineDash([]);
 
+      if (Number.isFinite(pointPrice)) {
+        const y = yAt(pointPrice);
+        ctx.beginPath();
+        ctx.fillStyle = color;
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      const text = String(label || "");
+      if (!text) {
+        return;
+      }
       ctx.font = "10px Sora, Segoe UI, sans-serif";
+      const tw = Math.ceil(ctx.measureText(text).width);
+      const bw = tw + 10;
+      const bh = 14;
+      const bx = this._clamp(x - bw / 2, pad.left + 2, pad.left + w - bw - 2);
+      const by = pad.top + h - 16 - lane * 16;
+      ctx.fillStyle = this._themeDark ? "rgba(22, 33, 48, 0.84)" : "rgba(250, 253, 255, 0.9)";
+      ctx.strokeStyle = this._themeDark ? "rgba(146, 168, 189, 0.32)" : "rgba(60, 85, 108, 0.2)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function") {
+        ctx.roundRect(bx, by, bw, bh, 7);
+      } else {
+        ctx.rect(bx, by, bw, bh);
+      }
+      ctx.fill();
+      ctx.stroke();
       ctx.textAlign = "center";
-      ctx.fillStyle = this._themeDark ? "rgba(255, 182, 182, 0.94)" : "rgba(179, 41, 41, 0.86)";
-      ctx.fillText("Jetzt", nowX, pad.top + 10);
-    }
+      ctx.fillStyle = color;
+      ctx.fillText(text, bx + bw / 2, by + 10);
+    };
+
+    const cheapColor = this._themeDark ? "rgba(46, 201, 169, 0.96)" : "rgba(15, 153, 122, 0.92)";
+    const peakColor = this._themeDark ? "rgba(245, 169, 83, 0.96)" : "rgba(210, 124, 28, 0.92)";
+    const nowColor = this._themeDark ? "rgba(255, 174, 174, 0.95)" : "rgba(185, 54, 54, 0.9)";
+    drawVerticalSignal(priceInfo.cheapestPoint?.t, priceInfo.cheapestPoint?.p, cheapColor, "Günstig", 0);
+    drawVerticalSignal(priceInfo.expensivePoint?.t, priceInfo.expensivePoint?.p, peakColor, "Peak", 1);
+    drawVerticalSignal(Date.now(), null, nowColor, "Jetzt", 2);
 
     const hoverIdx = this._priceHoverIndex;
     if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < rows.length) {
@@ -4739,7 +5030,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         ctx,
         [
           `Zeit: ${this._formatTime(row.t)}`,
-          `Preis: ${this._formatPrice(row.p, priceInfo.unit)}`,
+          `Preis: ${this._formatPrice(row.p, unit)}`,
         ],
         x,
         y,
@@ -4759,6 +5050,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
       }
       return value.toFixed(2);
     };
+    const fmtAxisTime = (ts) => {
+      if (!Number.isFinite(ts)) {
+        return "--";
+      }
+      if (spanTs >= 24 * 60 * 60 * 1000) {
+        const d = new Date(ts);
+        const dd = String(d.getDate()).padStart(2, "0");
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        return `${dd}.${mm} ${this._formatTime(ts)}`;
+      }
+      return this._formatTime(ts);
+    };
 
     ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
     ctx.font = "10px Sora, Segoe UI, sans-serif";
@@ -4766,9 +5069,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ctx.fillText(`${fmtAxis(yMax)} ${axisUnit}`, pad.left - 4, pad.top + 10);
     ctx.fillText(`${fmtAxis(yMin)} ${axisUnit}`, pad.left - 4, pad.top + h);
     ctx.textAlign = "left";
-    ctx.fillText(this._formatTime(minTs), pad.left, pad.top + h + 14);
+    ctx.fillText(fmtAxisTime(minTs), pad.left, pad.top + h + 14);
     ctx.textAlign = "right";
-    ctx.fillText(this._formatTime(maxTs), pad.left + w, pad.top + h + 14);
+    ctx.fillText(fmtAxisTime(maxTs), pad.left + w, pad.top + h + 14);
   }
 
   _weatherEntityId() {
@@ -5537,29 +5840,27 @@ class HaEnergyDashboardPanel extends HTMLElement {
       priceInfo.available ? this._formatPrice(priceInfo.nowPrice, priceInfo.unit) : "Kein Preis verfügbar"
     );
     this._setBoundText("price-source", priceInfo.available ? priceInfo.sourceText : "--");
+    const trendMix = this._trendMixSummary(this._trendData);
     this._setBoundText(
-      "price-cheap",
-      priceInfo.available ? this._formatPrice(priceInfo.cheap, priceInfo.unit) : "--"
+      "trend-mix-solar",
+      trendMix.available
+        ? `${this._formatEnergyKwh(trendMix.solarKwh)} · ${trendMix.solarPct.toFixed(0)} %`
+        : "--"
     );
     this._setBoundText(
-      "price-expensive",
-      priceInfo.available ? this._formatPrice(priceInfo.expensive, priceInfo.unit) : "--"
-    );
-    this._setBoundText("price-cheapest-window", priceInfo.available ? priceInfo.cheapestText : "--");
-    this._setBoundText("price-expensive-window", priceInfo.available ? priceInfo.expensiveText : "--");
-    this._setBoundText("price-level", priceInfo.available ? priceInfo.levelText : "--");
-    this._setBoundText(
-      "price-chart-min",
-      priceInfo.available ? this._formatPrice(priceInfo.chartMin, priceInfo.unit) : "--"
+      "trend-mix-battery",
+      trendMix.available
+        ? `${this._formatEnergyKwh(trendMix.batteryKwh)} · ${trendMix.batteryPct.toFixed(0)} %`
+        : "--"
     );
     this._setBoundText(
-      "price-chart-now",
-      priceInfo.available ? this._formatPrice(priceInfo.chartNow, priceInfo.unit) : "--"
+      "trend-mix-grid",
+      trendMix.available
+        ? `${this._formatEnergyKwh(trendMix.gridKwh)} · ${trendMix.gridPct.toFixed(0)} %`
+        : "--"
     );
-    this._setBoundText(
-      "price-chart-max",
-      priceInfo.available ? this._formatPrice(priceInfo.chartMax, priceInfo.unit) : "--"
-    );
+    this._setBoundText("trend-mix-autarky", trendMix.available ? this._formatPercent(trendMix.autarkyPct) : "--");
+    this._drawTrendMixChart();
     this._drawPriceChart();
   }
 
@@ -5856,7 +6157,19 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const trendModeBars = this._trendChartMode === TREND_CHART_MODES.bars;
     const trendValueKw = this._trendValueMode === TREND_VALUE_MODES.kw;
     const trendValueKwh = this._trendValueMode === TREND_VALUE_MODES.kwh;
-    const trendValueLegend = this._trendMetricLegendUnit();
+    const compactLabels = this._narrow;
+    const rangeLabelToday = compactLabels ? "H" : "Heute";
+    const rangeLabel24h = "24h";
+    const rangeLabel7d = compactLabels ? "7T" : "7 Tage";
+    const rangeLabelMonth = compactLabels ? "Mon" : "Monat";
+    const rangeLabelTotal = compactLabels ? "Ges" : "Gesamt";
+    const modeLabelLine = compactLabels ? "Lin" : "Linie";
+    const modeLabelBars = compactLabels ? "Bar" : "Balken";
+    const legendLabelLoad = compactLabels ? "L" : "Last";
+    const legendLabelRenew = compactLabels ? "PV" : "Solar";
+    const legendLabelBattery = compactLabels ? "Bat" : "Akku";
+    const legendLabelAutarky = compactLabels ? "Aut" : "Aut.";
+    const trendMix = this._trendMixSummary(this._trendData);
     const themeDark = this._themeDark;
     const settingsDraft = this._settingsDraft || this._settingsDraftFromConfig(cfg);
     const settingsOptions = this._settingsOpen
@@ -5912,6 +6225,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
       <style>
         :host {
           display: block;
+          width: 100%;
+          max-width: none;
           height: 100%;
           --ed-bg:
             radial-gradient(circle at 10% -6%, rgba(245, 252, 255, 0.9) 0 32%, rgba(245, 252, 255, 0) 33%),
@@ -5929,6 +6244,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .panel {
           min-height: 100%;
+          width: 100%;
+          margin: 0;
           padding: 14px;
           background: var(--ed-bg);
           color: var(--ed-text);
@@ -5994,6 +6311,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
           border-color: rgba(149, 171, 193, 0.24);
         }
 
+        .panel.theme-dark .trend-mix-panel,
+        .panel.theme-dark .trend-energy-main {
+          border-color: rgba(149, 171, 193, 0.24);
+          background: rgba(21, 33, 48, 0.58);
+        }
+
         .panel.theme-dark .range-btn {
           color: #9eb4c8;
         }
@@ -6007,11 +6330,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .panel.theme-dark .price-chart-wrap {
           border-color: rgba(149, 171, 193, 0.24);
           background: rgba(21, 33, 48, 0.78);
-        }
-
-        .panel.theme-dark .price-kpi {
-          border-color: rgba(149, 171, 193, 0.24);
-          background: rgba(24, 37, 52, 0.7);
         }
 
         .panel.theme-dark .source-track {
@@ -6806,8 +7124,114 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         #trend-canvas {
           width: 100%;
-          height: 220px;
+          height: 100%;
           display: block;
+        }
+
+        .trend-energy-layout {
+          display: grid;
+          grid-template-columns: minmax(0, 4fr) clamp(240px, 18vw, 320px);
+          gap: 8px;
+          align-items: stretch;
+        }
+
+        .trend-energy-main {
+          border-radius: 12px;
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          background: rgba(248, 252, 255, 0.72);
+          padding: 6px;
+          min-width: 0;
+          min-height: 0;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          justify-content: flex-start;
+          gap: 5px;
+        }
+
+        .trend-canvas-wrap {
+          flex: 1 1 0;
+          min-height: 210px;
+          min-width: 0;
+          display: flex;
+          align-items: stretch;
+        }
+
+        .trend-canvas-wrap #trend-canvas {
+          flex: 1 1 auto;
+          min-width: 0;
+          min-height: 0;
+          width: 100%;
+          height: 100%;
+          display: block;
+        }
+
+        .trend-mix-panel {
+          border-radius: 12px;
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          background: rgba(248, 252, 255, 0.72);
+          padding: 6px;
+          min-height: 0;
+          height: auto;
+          display: grid;
+          grid-template-rows: auto auto auto auto;
+          gap: 5px;
+          align-content: start;
+        }
+
+        .trend-mix-title {
+          font-size: 0.66rem;
+          color: var(--ed-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          font-weight: 700;
+        }
+
+        #trend-mix-canvas {
+          width: 100%;
+          min-height: 0;
+          height: 210px;
+          display: block;
+        }
+
+        .trend-mix-rows {
+          display: grid;
+          gap: 3px;
+          font-size: 0.66rem;
+          color: var(--ed-muted);
+        }
+
+        .trend-mix-row {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .trend-mix-row .v {
+          color: var(--ed-text);
+          font-weight: 700;
+          font-size: 0.72rem;
+          white-space: nowrap;
+        }
+
+        .trend-mix-autarky {
+          font-size: 0.68rem;
+          color: var(--ed-muted);
+        }
+
+        .trend-mix-autarky b {
+          color: var(--ed-text);
+        }
+
+        .trend-energy-main .trend-legend {
+          margin-top: 0;
+          font-size: 0.62rem;
+          flex-wrap: nowrap;
+          gap: 6px;
+          justify-content: space-between;
+          white-space: nowrap;
         }
 
         #savings-canvas {
@@ -6840,6 +7264,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         }
 
         .dot.load { background: #f29b38; }
+        .dot.grid { background: #f29b38; }
         .dot.renew { background: #25b788; }
         .dot.batt { background: #7c5cff; }
         .dot.aut { background: #2b78d7; }
@@ -6950,56 +7375,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .price-main {
           font-size: 1.05rem;
           font-weight: 800;
-          margin-bottom: 6px;
-        }
-
-        .price-layout {
-          display: flex;
-          gap: 10px;
-          align-items: stretch;
-        }
-
-        .price-left {
-          flex: 0 1 320px;
-          min-width: 220px;
-          max-width: 430px;
-        }
-
-        .price-right {
-          flex: 1 1 0;
-          min-width: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .price-kpis {
-          display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 6px;
-        }
-
-        .price-kpi {
-          border: 1px solid rgba(21, 40, 57, 0.12);
-          border-radius: 10px;
-          padding: 5px 7px;
-          background: rgba(244, 249, 253, 0.9);
-        }
-
-        .price-kpi .k {
-          font-size: 0.59rem;
-          color: var(--ed-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          line-height: 1.05;
-        }
-
-        .price-kpi .v {
-          font-size: 0.75rem;
-          font-weight: 700;
-          margin-top: 2px;
-          line-height: 1.12;
-          color: var(--ed-text);
+          margin: 0 0 4px;
         }
 
         .price-chart-wrap {
@@ -7020,6 +7396,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
           color: var(--ed-muted);
           display: grid;
           gap: 2px;
+          margin-bottom: 6px;
         }
 
         .warning {
@@ -7129,7 +7506,91 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .narrow .trend-head-right {
           width: 100%;
+          justify-content: flex-start;
+          gap: 5px;
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+
+        .narrow .trend-head-right::-webkit-scrollbar {
+          display: none;
+        }
+
+        .narrow .trend-state {
+          display: none;
+        }
+
+        .narrow .trend-controls {
+          flex-shrink: 0;
+          gap: 2px;
+          padding: 2px;
+        }
+
+        .narrow .range-btn {
+          font-size: 0.54rem;
+          padding: 3px 6px;
+        }
+
+        .narrow .trend-energy-layout {
+          grid-template-columns: minmax(0, 2fr) minmax(130px, 1fr);
+          gap: 6px;
+        }
+
+        .narrow .trend-energy-main,
+        .narrow .trend-mix-panel {
+          padding: 6px;
+          gap: 5px;
+          min-height: 0;
+        }
+
+        .narrow .trend-mix-panel {
+          aspect-ratio: auto;
+        }
+
+        .narrow .trend-energy-main #trend-canvas {
+          min-height: 0;
+          height: 100%;
+          flex: 1 1 auto;
+        }
+
+        .narrow .trend-canvas-wrap {
+          min-height: 170px;
+        }
+
+        .narrow #trend-mix-canvas {
+          min-height: 130px;
+          height: 130px;
+        }
+
+        .narrow .trend-mix-rows {
+          font-size: 0.62rem;
+        }
+
+        .narrow .trend-mix-row .v {
+          font-size: 0.68rem;
+        }
+
+        .narrow .trend-mix-autarky {
+          font-size: 0.64rem;
+        }
+
+        .narrow .trend-energy-main .trend-legend {
+          font-size: 0.52rem;
+          gap: 4px;
+          flex-wrap: nowrap;
+          white-space: nowrap;
           justify-content: space-between;
+        }
+
+        .narrow .trend-energy-main .legend-item {
+          gap: 3px;
+        }
+
+        .narrow .trend-energy-main .dot {
+          width: 6px;
+          height: 6px;
         }
 
         .narrow .source-row {
@@ -7137,55 +7598,22 @@ class HaEnergyDashboardPanel extends HTMLElement {
           gap: 6px;
         }
 
-        .narrow .price-layout {
-          display: flex;
-          gap: 8px;
-          align-items: stretch;
-        }
-
-        .narrow .price-left {
-          flex: 0 1 42%;
-          min-width: 118px;
-          max-width: none;
-        }
-
-        .narrow .price-right {
-          flex: 1 1 58%;
-          min-width: 0;
+        .narrow .price-top {
+          flex-wrap: wrap;
+          align-items: flex-start;
+          gap: 6px;
         }
 
         .narrow .price-main {
-          font-size: 0.92rem;
-          margin-bottom: 4px;
+          font-size: 0.98rem;
         }
 
         .narrow .price-info {
-          font-size: 0.66rem;
-          gap: 1px;
-        }
-
-        .narrow .price-kpis {
-          gap: 4px;
-        }
-
-        .narrow .price-kpi {
-          padding: 4px 5px;
-        }
-
-        .narrow .price-kpi .k {
-          font-size: 0.53rem;
-        }
-
-        .narrow .price-kpi .v {
-          font-size: 0.66rem;
+          font-size: 0.68rem;
         }
 
         .narrow #price-canvas {
-          height: 126px;
-        }
-
-        .narrow #trend-canvas {
-          height: 170px;
+          height: 134px;
         }
 
         .narrow #savings-canvas {
@@ -7416,55 +7844,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
               ${priceInfo.available ? priceInfo.action : "Nicht verfügbar"}
             </div>
           </div>
-          <div class="price-layout">
-            <div class="price-left">
-              <div class="price-main" data-bind="price-main">${
-                priceInfo.available
-                  ? this._formatPrice(priceInfo.nowPrice, priceInfo.unit)
-                  : "Kein Preis verfügbar"
-              }</div>
-              <div class="price-info">
-                <div>Datenquelle: <span data-bind="price-source">${priceInfo.available ? priceInfo.sourceText : "--"}</span></div>
-                <div>Günstig-Schwelle: <span data-bind="price-cheap">${
-                  priceInfo.available ? this._formatPrice(priceInfo.cheap, priceInfo.unit) : "--"
-                }</span></div>
-                <div>Teuer-Schwelle: <span data-bind="price-expensive">${
-                  priceInfo.available ? this._formatPrice(priceInfo.expensive, priceInfo.unit) : "--"
-                }</span></div>
-                <div>Nächstes günstigstes Fenster: <span data-bind="price-cheapest-window">${
-                  priceInfo.available ? priceInfo.cheapestText : "--"
-                }</span></div>
-                <div>Nächstes teuerstes Fenster: <span data-bind="price-expensive-window">${
-                  priceInfo.available ? priceInfo.expensiveText : "--"
-                }</span></div>
-                <div>Preisniveau: <span data-bind="price-level">${priceInfo.available ? priceInfo.levelText : "--"}</span></div>
-              </div>
-            </div>
-            <div class="price-right">
-              <div class="price-kpis">
-                <div class="price-kpi">
-                  <div class="k">Min</div>
-                  <div class="v" data-bind="price-chart-min">${
-                    priceInfo.available ? this._formatPrice(priceInfo.chartMin, priceInfo.unit) : "--"
-                  }</div>
-                </div>
-                <div class="price-kpi">
-                  <div class="k">Aktuell</div>
-                  <div class="v" data-bind="price-chart-now">${
-                    priceInfo.available ? this._formatPrice(priceInfo.chartNow, priceInfo.unit) : "--"
-                  }</div>
-                </div>
-                <div class="price-kpi">
-                  <div class="k">Max</div>
-                  <div class="v" data-bind="price-chart-max">${
-                    priceInfo.available ? this._formatPrice(priceInfo.chartMax, priceInfo.unit) : "--"
-                  }</div>
-                </div>
-              </div>
-              <div class="price-chart-wrap">
-                <canvas id="price-canvas"></canvas>
-              </div>
-            </div>
+          <div class="price-main" data-bind="price-main">${
+            priceInfo.available ? this._formatPrice(priceInfo.nowPrice, priceInfo.unit) : "Kein Preis verfügbar"
+          }</div>
+          <div class="price-info">
+            <div>Datenquelle: <span data-bind="price-source">${priceInfo.available ? priceInfo.sourceText : "--"}</span></div>
+          </div>
+          <div class="price-chart-wrap">
+            <canvas id="price-canvas"></canvas>
           </div>
         </section>
 
@@ -7550,15 +7937,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="trend-title icon-label"><ha-icon icon="mdi:chart-line"></ha-icon><span>Tagesverlauf</span></div>
             <div class="trend-head-right">
               <div class="trend-controls">
-                <button class="range-btn ${rangeToday ? "active" : ""}" data-action="trend-range" data-range="today">Heute</button>
-                <button class="range-btn ${range24h ? "active" : ""}" data-action="trend-range" data-range="day24">24h</button>
-                <button class="range-btn ${range7d ? "active" : ""}" data-action="trend-range" data-range="week7">7 Tage</button>
-                <button class="range-btn ${rangeMonth ? "active" : ""}" data-action="trend-range" data-range="month">Monat</button>
-                <button class="range-btn ${rangeTotal ? "active" : ""}" data-action="trend-range" data-range="total">Gesamt</button>
+                <button class="range-btn ${rangeToday ? "active" : ""}" data-action="trend-range" data-range="today">${rangeLabelToday}</button>
+                <button class="range-btn ${range24h ? "active" : ""}" data-action="trend-range" data-range="day24">${rangeLabel24h}</button>
+                <button class="range-btn ${range7d ? "active" : ""}" data-action="trend-range" data-range="week7">${rangeLabel7d}</button>
+                <button class="range-btn ${rangeMonth ? "active" : ""}" data-action="trend-range" data-range="month">${rangeLabelMonth}</button>
+                <button class="range-btn ${rangeTotal ? "active" : ""}" data-action="trend-range" data-range="total">${rangeLabelTotal}</button>
               </div>
               <div class="trend-controls trend-mode-controls">
-                <button class="range-btn ${trendModeLine ? "active" : ""}" data-action="trend-mode" data-mode="line">Linie</button>
-                <button class="range-btn ${trendModeBars ? "active" : ""}" data-action="trend-mode" data-mode="bars">Balken</button>
+                <button class="range-btn ${trendModeLine ? "active" : ""}" data-action="trend-mode" data-mode="line">${modeLabelLine}</button>
+                <button class="range-btn ${trendModeBars ? "active" : ""}" data-action="trend-mode" data-mode="bars">${modeLabelBars}</button>
               </div>
               <div class="trend-controls trend-unit-controls">
                 <button class="range-btn ${trendValueKw ? "active" : ""}" data-action="trend-value-mode" data-value-mode="kw">kW</button>
@@ -7567,22 +7954,64 @@ class HaEnergyDashboardPanel extends HTMLElement {
               <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
             </div>
           </div>
-          <canvas id="trend-canvas"></canvas>
-          <div class="trend-legend">
-            ${
-              trendModeBars
-                ? `
-            <span class="legend-item"><span class="dot load"></span>Gesamtlast (${trendValueLegend})</span>
-            <span class="legend-item"><span class="dot renew"></span>Solar deckt (${trendValueLegend})</span>
-            <span class="legend-item"><span class="dot batt"></span>Batterie deckt (${trendValueLegend})</span>
-            <span class="legend-item"><span class="dot aut"></span>Autarkie-Marker</span>
-            `
-                : `
-            <span class="legend-item"><span class="dot load"></span>Gesamtlast (${trendValueLegend})</span>
-            <span class="legend-item"><span class="dot renew"></span>Erneuerbarer Anteil (${trendValueLegend})</span>
-            <span class="legend-item"><span class="dot aut"></span>Autarkie %</span>
-            `
-            }
+          <div class="trend-energy-layout">
+            <div class="trend-energy-main">
+              <div class="trend-canvas-wrap">
+                <canvas id="trend-canvas"></canvas>
+              </div>
+              <div class="trend-legend">
+                ${
+                  trendModeBars
+                    ? `
+                <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
+                <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
+                <span class="legend-item"><span class="dot batt"></span>${legendLabelBattery}</span>
+                <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
+                `
+                    : `
+                <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
+                <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
+                <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
+                `
+                }
+              </div>
+            </div>
+            <aside class="trend-mix-panel">
+              <div class="trend-mix-title icon-label"><ha-icon icon="mdi:chart-donut"></ha-icon><span>Verbrauchsmix (${trendLabel})</span></div>
+              <div class="trend-mix-rows">
+                <div class="trend-mix-row">
+                  <span class="dot renew"></span>
+                  <span>Solar</span>
+                  <span class="v" data-bind="trend-mix-solar">${
+                    trendMix.available
+                      ? `${this._formatEnergyKwh(trendMix.solarKwh)} · ${trendMix.solarPct.toFixed(0)} %`
+                      : "--"
+                  }</span>
+                </div>
+                <div class="trend-mix-row">
+                  <span class="dot batt"></span>
+                  <span>Akku</span>
+                  <span class="v" data-bind="trend-mix-battery">${
+                    trendMix.available
+                      ? `${this._formatEnergyKwh(trendMix.batteryKwh)} · ${trendMix.batteryPct.toFixed(0)} %`
+                      : "--"
+                  }</span>
+                </div>
+                <div class="trend-mix-row">
+                  <span class="dot grid"></span>
+                  <span>Netz</span>
+                  <span class="v" data-bind="trend-mix-grid">${
+                    trendMix.available
+                      ? `${this._formatEnergyKwh(trendMix.gridKwh)} · ${trendMix.gridPct.toFixed(0)} %`
+                      : "--"
+                  }</span>
+                </div>
+              </div>
+              <div class="trend-mix-autarky">Autarkiegrad: <b data-bind="trend-mix-autarky">${
+                trendMix.available ? this._formatPercent(trendMix.autarkyPct) : "--"
+              }</b></div>
+              <canvas id="trend-mix-canvas"></canvas>
+            </aside>
           </div>
         </section>
 
@@ -7694,6 +8123,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     requestAnimationFrame(() => {
       try {
         this._drawTrendChart();
+        this._drawTrendMixChart();
         this._drawSavingsChart();
         this._drawPriceChart();
       } catch (error) {
