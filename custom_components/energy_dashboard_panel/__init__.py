@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import voluptuous as vol
@@ -123,9 +124,24 @@ def _coerce_float(raw: object, minimum: float, maximum: float) -> float | None:
     """Parse and clamp float values."""
     if raw is None:
         return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
+    value: float | None = None
+    if isinstance(raw, str):
+        txt = raw.strip()
+        if not txt:
+            return None
+        cleaned = re.sub(r"[^\d+\-.,]", "", txt).replace(",", ".")
+        if cleaned in {"", "+", "-", ".", "+.", "-."}:
+            return None
+        try:
+            value = float(cleaned)
+        except ValueError:
+            return None
+    else:
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+    if value is None:
         return None
     return max(minimum, min(maximum, value))
 
