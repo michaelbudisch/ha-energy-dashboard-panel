@@ -13,7 +13,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Tagesverlauf, Sparverlauf, Monatsreport (Monat-Tab) und Lifetime-Sensoren
 - Berichte (Monat/Jahr) als CSV/PDF direkt im Panel
 - Hover-Tooltips in den Charts (Maus ueber Diagramm zeigt Einzelwerte)
-- Tagesverlauf umschaltbar zwischen Linien- und Balkenansicht
+- Tagesverlauf umschaltbar: Linien/Balken + kW/kWh pro Intervall
 - Lokaler Einstellungsdialog im Panel (YAML bleibt Fallback)
 
 ## Installation

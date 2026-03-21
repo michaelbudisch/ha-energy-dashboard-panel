@@ -114,6 +114,10 @@ const TREND_CHART_MODES = {
   line: "line",
   bars: "bars",
 };
+const TREND_VALUE_MODES = {
+  kw: "kw",
+  kwh: "kwh",
+};
 const TREND_STEP_MIN_MS = 15 * 60 * 1000;
 
 const GRID_STATUS_ENTER_W = 80;
@@ -143,6 +147,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendRange = TREND_RANGES.today.key;
     this._trendChartMode = TREND_CHART_MODES.line;
     this._trendChartModeLoaded = false;
+    this._trendValueMode = TREND_VALUE_MODES.kw;
+    this._trendValueModeLoaded = false;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
     this._uiConfig = {};
@@ -279,6 +285,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._cachedAutoWeatherEntity = null;
     this._themeLoaded = false;
     this._trendChartModeLoaded = false;
+    this._trendValueModeLoaded = false;
     this._uiConfigLoaded = false;
     this._uiConfigBackendSyncStarted = false;
     this._uiConfigBackendSyncPromise = null;
@@ -773,6 +780,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return `energy_dashboard_panel_trend_mode::${path}`;
   }
 
+  _trendValueModeStorageKey() {
+    const path = this._panel?.url_path || this._panel?.path || "default";
+    return `energy_dashboard_panel_trend_value_mode::${path}`;
+  }
+
   _ensureThemePreference() {
     if (this._themeLoaded) {
       return;
@@ -833,6 +845,38 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendChartMode = mode;
     try {
       window.localStorage.setItem(this._trendModeStorageKey(), mode);
+    } catch (error) {
+      // Ignore storage failures.
+    }
+    this._scheduleChartRedraw();
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _ensureTrendValueMode() {
+    if (this._trendValueModeLoaded) {
+      return;
+    }
+    let mode = TREND_VALUE_MODES.kw;
+    try {
+      const raw = window.localStorage.getItem(this._trendValueModeStorageKey());
+      if (raw === TREND_VALUE_MODES.kw || raw === TREND_VALUE_MODES.kwh) {
+        mode = raw;
+      }
+    } catch (error) {
+      // Ignore storage failures.
+    }
+    this._trendValueMode = mode;
+    this._trendValueModeLoaded = true;
+  }
+
+  _setTrendValueMode(modeRaw) {
+    const mode = modeRaw === TREND_VALUE_MODES.kwh ? TREND_VALUE_MODES.kwh : TREND_VALUE_MODES.kw;
+    if (this._trendValueMode === mode) {
+      return;
+    }
+    this._trendValueMode = mode;
+    try {
+      window.localStorage.setItem(this._trendValueModeStorageKey(), mode);
     } catch (error) {
       // Ignore storage failures.
     }
@@ -1884,6 +1928,44 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return `${(value / 1000).toFixed(2)}kW`;
     }
     return `${value.toFixed(0)}W`;
+  }
+
+  _trendMetricFromPowerW(powerW, stepHours) {
+    if (powerW === null || powerW === undefined) {
+      return null;
+    }
+    const watts = Math.max(0, Number(powerW) || 0);
+    if (this._trendValueMode === TREND_VALUE_MODES.kwh) {
+      return (watts * stepHours) / 1000;
+    }
+    return watts / 1000;
+  }
+
+  _formatTrendMetricValue(powerW, stepHours) {
+    const value = this._trendMetricFromPowerW(powerW, stepHours);
+    if (value === null || !Number.isFinite(value)) {
+      return "--";
+    }
+    if (this._trendValueMode === TREND_VALUE_MODES.kwh) {
+      const decimals = value >= 1 ? 2 : 3;
+      return `${value.toFixed(decimals)} kWh`;
+    }
+    const decimals = value >= 10 ? 1 : 2;
+    return `${value.toFixed(decimals)} kW`;
+  }
+
+  _formatTrendAxisValue(value) {
+    const n = Math.max(0, Number(value) || 0);
+    if (this._trendValueMode === TREND_VALUE_MODES.kwh) {
+      const decimals = n >= 1 ? 2 : 3;
+      return `${n.toFixed(decimals)} kWh`;
+    }
+    const decimals = n >= 10 ? 1 : 2;
+    return `${n.toFixed(decimals)} kW`;
+  }
+
+  _trendMetricLegendUnit() {
+    return this._trendValueMode === TREND_VALUE_MODES.kwh ? "kWh/Intervall" : "kW";
   }
 
   _formatEnergyKwh(valueKwh) {
@@ -3332,6 +3414,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     return {
       points,
+      stepMs,
       renewableShareDay,
       avgAutarkyDay,
       savedNonGridEur: savedNonGridFinal,
@@ -4048,8 +4131,17 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const w = cssWidth - pad.left - pad.right;
     const h = cssHeight - pad.top - pad.bottom;
 
-    const maxLoad = Math.max(1, data.maxLoad || 1);
-    const yPower = (v) => pad.top + h - (v / maxLoad) * h;
+    const stepMs = Math.max(TREND_STEP_MIN_MS, Number(data.stepMs) || TREND_STEP_MIN_MS);
+    const stepHours = stepMs / (60 * 60 * 1000);
+    const toMetric = (powerW) => this._trendMetricFromPowerW(powerW, stepHours);
+    const maxLoad = Math.max(
+      0.001,
+      ...data.points.map((point) => {
+        const metric = toMetric(point?.load);
+        return metric === null ? 0 : metric;
+      })
+    );
+    const yPower = (v) => pad.top + h - ((Math.max(0, Number(v) || 0) / maxLoad) * h);
     const yPct = (v) => pad.top + h - (this._clamp(v ?? 0, 0, 100) / 100) * h;
     const xAt = (i, n) => pad.left + (i / (n - 1)) * w;
 
@@ -4066,8 +4158,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ctx.fillStyle = "#6b7b8a";
     ctx.font = "11px Sora, Segoe UI, sans-serif";
     ctx.textAlign = "right";
-    ctx.fillText(`${Math.round(maxLoad)} W`, pad.left - 6, pad.top + 10);
-    ctx.fillText("0 W", pad.left - 6, pad.top + h);
+    ctx.fillText(this._formatTrendAxisValue(maxLoad), pad.left - 6, pad.top + 10);
+    ctx.fillText(this._formatTrendAxisValue(0), pad.left - 6, pad.top + h);
     ctx.textAlign = "left";
     ctx.fillText("100%", pad.left + w + 6, pad.top + 10);
     ctx.fillText("0%", pad.left + w + 6, pad.top + h);
@@ -4080,13 +4172,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ctx.beginPath();
       let moved = false;
       for (let i = 0; i < data.points.length; i += 1) {
-        const val = data.points[i][key];
-        if (val === null || val === undefined) {
+        const metric = toMetric(data.points[i][key]);
+        if (metric === null || metric === undefined) {
           moved = false;
           continue;
         }
         const x = xAt(i, data.points.length);
-        const y = yPower(val);
+        const y = yPower(metric);
         if (!moved) {
           ctx.moveTo(x, y);
           moved = true;
@@ -4131,7 +4223,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const baselineY = pad.top + h;
       const segmentWidth = Math.max(1, barWidth - 2);
       data.points.forEach((point, i) => {
-        const load = Math.max(0, point?.load ?? 0);
+        const load = toMetric(point?.load);
         if (!(load > 0)) {
           return;
         }
@@ -4149,16 +4241,19 @@ class HaEnergyDashboardPanel extends HTMLElement {
         ctx.lineWidth = 1;
         ctx.strokeRect(xLeft + 0.5, yTop + 0.5, Math.max(1, barWidth - 1), Math.max(1, barHeight - 1));
 
-        const solarCover = this._clamp(point.solarCover ?? 0, 0, load);
-        const batteryCover = this._clamp(point.batteryCover ?? 0, 0, load - solarCover);
-        const gridCover = this._clamp(point.gridCover ?? 0, 0, load - solarCover - batteryCover);
+        const solarCoverRaw = toMetric(point.solarCover) ?? 0;
+        const batteryCoverRaw = toMetric(point.batteryCover) ?? 0;
+        const gridCoverRaw = toMetric(point.gridCover) ?? 0;
+        const solarCover = this._clamp(solarCoverRaw, 0, load);
+        const batteryCover = this._clamp(batteryCoverRaw, 0, load - solarCover);
+        const gridCover = this._clamp(gridCoverRaw, 0, load - solarCover - batteryCover);
 
         let cursor = baselineY;
-        const drawSegment = (valueW, color) => {
-          if (!(valueW > 0)) {
+        const drawSegment = (value, color) => {
+          if (!(value > 0)) {
             return;
           }
-          const segHeight = (valueW / maxLoad) * h;
+          const segHeight = (value / maxLoad) * h;
           if (!(segHeight > 0.2)) {
             return;
           }
@@ -4219,35 +4314,40 @@ class HaEnergyDashboardPanel extends HTMLElement {
         };
 
         if (this._trendChartMode === TREND_CHART_MODES.bars) {
-          drawMarker(point.load, yPower, "#f29b38");
-          drawMarker(point.solarCover, yPower, "#25b788");
-          drawMarker(point.batteryCover, yPower, "#7c5cff");
+          drawMarker(toMetric(point.load), yPower, "#f29b38");
+          drawMarker(toMetric(point.solarCover), yPower, "#25b788");
+          drawMarker(toMetric(point.batteryCover), yPower, "#7c5cff");
           const autarkyCover =
             point.autarky === null || point.autarky === undefined || point.load === null
               ? null
-              : this._clamp((point.autarky / 100) * point.load, 0, point.load);
+              : this._clamp(
+                  (point.autarky / 100) * (toMetric(point.load) ?? 0),
+                  0,
+                  toMetric(point.load) ?? 0
+                );
           drawMarker(autarkyCover, yPower, "#2b78d7");
         } else {
-          drawMarker(point.load, yPower, "#f29b38");
-          drawMarker(point.renewable, yPower, "#25b788");
+          drawMarker(toMetric(point.load), yPower, "#f29b38");
+          drawMarker(toMetric(point.renewable), yPower, "#25b788");
           drawMarker(point.autarky, yPct, "#2b78d7");
         }
 
         const lines = [`Zeit: ${this._formatTime(point.t)}`];
+        const intervalSuffix = this._trendValueMode === TREND_VALUE_MODES.kwh ? " (Intervall)" : "";
         if (point.load !== null && point.load !== undefined) {
-          lines.push(`Gesamtlast: ${this._formatPower(point.load)}`);
+          lines.push(`Gesamtlast${intervalSuffix}: ${this._formatTrendMetricValue(point.load, stepHours)}`);
         }
         if (point.solarCover !== null && point.solarCover !== undefined) {
-          lines.push(`Solar deckt: ${this._formatPower(point.solarCover)}`);
+          lines.push(`Solar deckt${intervalSuffix}: ${this._formatTrendMetricValue(point.solarCover, stepHours)}`);
         }
         if (point.batteryCover !== null && point.batteryCover !== undefined) {
-          lines.push(`Batterie deckt: ${this._formatPower(point.batteryCover)}`);
+          lines.push(`Batterie deckt${intervalSuffix}: ${this._formatTrendMetricValue(point.batteryCover, stepHours)}`);
         }
         if (point.gridCover !== null && point.gridCover !== undefined) {
-          lines.push(`Netz deckt: ${this._formatPower(point.gridCover)}`);
+          lines.push(`Netz deckt${intervalSuffix}: ${this._formatTrendMetricValue(point.gridCover, stepHours)}`);
         }
         if (point.renewable !== null && point.renewable !== undefined && this._trendChartMode !== TREND_CHART_MODES.bars) {
-          lines.push(`Erneuerbar: ${this._formatPower(point.renewable)}`);
+          lines.push(`Erneuerbar${intervalSuffix}: ${this._formatTrendMetricValue(point.renewable, stepHours)}`);
         }
         if (point.autarky !== null && point.autarky !== undefined) {
           lines.push(`Autarkie: ${this._formatPercent(point.autarky)}`);
@@ -5317,6 +5417,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
       });
     });
 
+    this.shadowRoot.querySelectorAll("[data-action='trend-value-mode']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = btn.getAttribute("data-value-mode");
+        if (mode) {
+          this._setTrendValueMode(mode);
+        }
+      });
+    });
+
     if (!this._editMode) {
       return;
     }
@@ -5393,6 +5502,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._ensurePositions();
     this._ensureThemePreference();
     this._ensureTrendChartMode();
+    this._ensureTrendValueMode();
 
     const cfg = this._panelConfig();
     const sensors = this._sensors();
@@ -5498,6 +5608,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const rangeTotal = this._trendRange === TREND_RANGES.total.key;
     const trendModeLine = this._trendChartMode === TREND_CHART_MODES.line;
     const trendModeBars = this._trendChartMode === TREND_CHART_MODES.bars;
+    const trendValueKw = this._trendValueMode === TREND_VALUE_MODES.kw;
+    const trendValueKwh = this._trendValueMode === TREND_VALUE_MODES.kwh;
+    const trendValueLegend = this._trendMetricLegendUnit();
     const themeDark = this._themeDark;
     const settingsDraft = this._settingsDraft || this._settingsDraftFromConfig(cfg);
     const settingsOptions = this._settingsOpen
@@ -6414,6 +6527,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
           padding-inline: 10px;
         }
 
+        .trend-unit-controls .range-btn {
+          min-width: 44px;
+          text-align: center;
+        }
+
         .range-btn {
           border: 0;
           background: transparent;
@@ -7048,6 +7166,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 <button class="range-btn ${trendModeLine ? "active" : ""}" data-action="trend-mode" data-mode="line">Linie</button>
                 <button class="range-btn ${trendModeBars ? "active" : ""}" data-action="trend-mode" data-mode="bars">Balken</button>
               </div>
+              <div class="trend-controls trend-unit-controls">
+                <button class="range-btn ${trendValueKw ? "active" : ""}" data-action="trend-value-mode" data-value-mode="kw">kW</button>
+                <button class="range-btn ${trendValueKwh ? "active" : ""}" data-action="trend-value-mode" data-value-mode="kwh">kWh</button>
+              </div>
               <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
             </div>
           </div>
@@ -7056,14 +7178,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
             ${
               trendModeBars
                 ? `
-            <span class="legend-item"><span class="dot load"></span>Gesamtlast</span>
-            <span class="legend-item"><span class="dot renew"></span>Solar deckt</span>
-            <span class="legend-item"><span class="dot batt"></span>Batterie deckt</span>
+            <span class="legend-item"><span class="dot load"></span>Gesamtlast (${trendValueLegend})</span>
+            <span class="legend-item"><span class="dot renew"></span>Solar deckt (${trendValueLegend})</span>
+            <span class="legend-item"><span class="dot batt"></span>Batterie deckt (${trendValueLegend})</span>
             <span class="legend-item"><span class="dot aut"></span>Autarkie-Marker</span>
             `
                 : `
-            <span class="legend-item"><span class="dot load"></span>Gesamtlast</span>
-            <span class="legend-item"><span class="dot renew"></span>Erneuerbarer Anteil</span>
+            <span class="legend-item"><span class="dot load"></span>Gesamtlast (${trendValueLegend})</span>
+            <span class="legend-item"><span class="dot renew"></span>Erneuerbarer Anteil (${trendValueLegend})</span>
             <span class="legend-item"><span class="dot aut"></span>Autarkie %</span>
             `
             }
