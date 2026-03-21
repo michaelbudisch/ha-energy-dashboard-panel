@@ -2391,6 +2391,28 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return arr[low] * (1 - ratio) + arr[high] * ratio;
   }
 
+  _inferPriceResolutionMs(rows) {
+    if (!Array.isArray(rows) || rows.length < 2) {
+      return 60 * 60 * 1000;
+    }
+    let minDiff = Infinity;
+    for (let i = 1; i < rows.length; i += 1) {
+      const a = rows[i - 1];
+      const b = rows[i];
+      const diff = (Number(b?.t) || 0) - (Number(a?.t) || 0);
+      if (Number.isFinite(diff) && diff > 0 && diff < minDiff) {
+        minDiff = diff;
+      }
+    }
+    if (!Number.isFinite(minDiff)) {
+      return 60 * 60 * 1000;
+    }
+    if (minDiff < 5 * 60 * 1000 || minDiff > 6 * 60 * 60 * 1000) {
+      return 60 * 60 * 1000;
+    }
+    return minDiff;
+  }
+
   _normalizePriceUnit(unit) {
     const raw = String(unit || "").trim();
     if (!raw) {
@@ -2592,7 +2614,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const uniqueRows = [...rowByTs.values()];
     uniqueRows.sort((a, b) => a.t - b.t);
 
-    const futureRows = uniqueRows.filter((r) => r.t >= now - 30 * 60 * 1000 && r.t <= now + 24 * 60 * 60 * 1000);
+    const resolutionMs = this._inferPriceResolutionMs(uniqueRows);
+    const lookbackMs = Math.max(
+      5 * 60 * 1000,
+      Math.min(2 * 60 * 60 * 1000, resolutionMs + 2 * 60 * 1000)
+    );
+    const futureRows = uniqueRows.filter(
+      (r) => r.t >= now - lookbackMs && r.t <= now + 24 * 60 * 60 * 1000
+    );
     const prices = futureRows.map((r) => r.p);
     let cheapEur = prices.length >= 2 ? this._quantile(prices, 0.25) : null;
     let expensiveEur = prices.length >= 2 ? this._quantile(prices, 0.75) : null;
@@ -2637,9 +2666,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const mostExpensiveRow =
       futureRows.length > 0 ? futureRows.reduce((a, b) => (a.p >= b.p ? a : b)) : null;
 
+    const resolutionLabel = `${Math.max(1, Math.round(resolutionMs / (60 * 1000)))}m`;
     const sourceText =
       attrRows.length > 0
-        ? "Tibber 24h Forecast"
+        ? `Tibber 24h Forecast (${resolutionLabel})`
         : fallbackRows.length > 0
           ? "Preis nächste 1h-5h"
           : minTodayEur !== null || maxTodayEur !== null
@@ -2669,6 +2699,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       mode,
       entityId: currentEntityId || null,
       unit: displayUnit,
+      resolutionMinutes: Math.max(1, Math.round(resolutionMs / (60 * 1000))),
       nowPrice: this._priceFromEur(nowPriceEur, displayUnit),
       cheap: this._priceFromEur(cheapEur, displayUnit),
       expensive: this._priceFromEur(expensiveEur, displayUnit),
