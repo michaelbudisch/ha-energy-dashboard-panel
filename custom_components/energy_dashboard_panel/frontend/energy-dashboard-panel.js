@@ -7170,6 +7170,42 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .card .v { font-size: 1.02rem; }
 
+        .block-status .card {
+          min-height: 112px;
+          justify-content: flex-start;
+          padding-top: 10px;
+          padding-bottom: 10px;
+        }
+
+        .block-status .card .k.icon-label ha-icon {
+          top: 12px;
+          transform: none;
+          width: 32px;
+          height: 32px;
+          --mdc-icon-size: 20px;
+        }
+
+        .block-status .card .v {
+          margin-top: 2px;
+          font-size: 1.15rem;
+          line-height: 1.15;
+        }
+
+        .block-status .card .status-detail {
+          margin-top: 4px;
+          color: var(--ed-muted);
+          font-size: 0.72rem;
+          line-height: 1.25;
+          text-transform: none;
+          letter-spacing: 0;
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+
+        .block-status .card .status-detail.lead {
+          margin-top: 6px;
+        }
+
         .stats {
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -7660,7 +7696,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
           gap: 6px;
         }
 
-        .narrow .block-status,
+        .narrow .block-status {
+          grid-template-columns: 1fr;
+        }
+
         .narrow .block-diag {
           grid-template-columns: repeat(3, minmax(0, 1fr));
         }
@@ -7815,6 +7854,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
           padding: 8px 7px 8px 56px;
           min-height: 54px;
         }
+        .narrow .block-status .card {
+          min-height: 102px;
+          padding-top: 8px;
+          padding-bottom: 8px;
+        }
         .narrow .card .k.icon-label,
         .narrow .stats .k,
         .narrow .kpi-strip .k { font-size: 0.58rem; }
@@ -7830,9 +7874,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .narrow .card .v,
         .narrow .stats .v,
         .narrow .kpi-strip .v { font-size: 0.78rem; }
+        .narrow .block-status .card .v { font-size: 1rem; }
+        .narrow .block-status .card .status-detail { font-size: 0.68rem; }
         .narrow .stats .v-two-way { font-size: 0.72rem; }
         .narrow .icon-label { gap: 4px; }
-        .narrow .icon-label ha-icon { --mdc-icon-size: 11px; }
+        .narrow .source-head.icon-label ha-icon,
+        .narrow .price-title.icon-label ha-icon,
+        .narrow .trend-title.icon-label ha-icon,
+        .narrow .source-row .icon-label ha-icon { --mdc-icon-size: 11px; }
         .narrow .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
         @media (max-width: 390px) {
@@ -7932,23 +7981,23 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <article class="card">
             <div class="k icon-label"><ha-icon icon="mdi:transmission-tower"></ha-icon><span>Netzstatus</span></div>
             <div class="v" data-bind="grid-status">${this._gridStatus(grid)}</div>
-            <div class="k" style="margin-top:6px;text-transform:none;letter-spacing:0;" data-bind="grid-proj-main">${gridProjection.main}</div>
-            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;" data-bind="grid-proj-detail">${gridProjection.detail}</div>
+            <div class="status-detail lead" data-bind="grid-proj-main">${gridProjection.main}</div>
+            <div class="status-detail" data-bind="grid-proj-detail">${gridProjection.detail}</div>
           </article>
           <article class="card">
             <div class="k icon-label"><ha-icon icon="mdi:battery"></ha-icon><span>Batteriestatus</span></div>
             <div class="v" data-bind="battery-status">${this._batteryStatus(battery)}</div>
-            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;">Restlaufzeit (Prognose)</div>
+            <div class="status-detail">Restlaufzeit (Prognose)</div>
             <div class="v" data-bind="battery-runtime">${batteryRuntime.label}</div>
-            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;" data-bind="battery-runtime-detail">${batteryRuntime.detail}</div>
+            <div class="status-detail" data-bind="battery-runtime-detail">${batteryRuntime.detail}</div>
           </article>
           <article class="card">
             <div class="k icon-label"><ha-icon icon="mdi:battery-charging-medium"></ha-icon><span>Akkuladung Quelle</span></div>
             <div class="v" data-bind="charge-label">${chargeSource.label}</div>
-            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;" data-bind="charge-detail">${chargeSource.detail}</div>
-            <div class="k" style="margin-top:6px;text-transform:none;letter-spacing:0;">Ladezeit bis ${Math.round(batteryChargeEta.targetSoc ?? 100)}% (Prognose)</div>
+            <div class="status-detail" data-bind="charge-detail">${chargeSource.detail}</div>
+            <div class="status-detail lead">Ladezeit bis ${Math.round(batteryChargeEta.targetSoc ?? 100)}% (Prognose)</div>
             <div class="v" data-bind="charge-runtime">${batteryChargeEta.label}</div>
-            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;" data-bind="charge-runtime-detail">${batteryChargeEta.detail}</div>
+            <div class="status-detail" data-bind="charge-runtime-detail">${batteryChargeEta.detail}</div>
           </article>
         </section>
 
