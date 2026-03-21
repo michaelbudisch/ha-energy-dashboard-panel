@@ -2592,6 +2592,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     const attrs = mainStateObj?.attributes || {};
     const attrsUnit = this._normalizePriceUnit(attrs.unit_of_measurement || displayUnit);
+    const sensorResolutionMin = this._toNum(attrs.resolution_minutes);
     const attrRows = [
       ...this._extractPriceRows(attrs.raw_today, todayStart, attrsUnit),
       ...this._extractPriceRows(attrs.raw_tomorrow, tomorrowStart, attrsUnit),
@@ -2614,7 +2615,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const uniqueRows = [...rowByTs.values()];
     uniqueRows.sort((a, b) => a.t - b.t);
 
-    const resolutionMs = this._inferPriceResolutionMs(uniqueRows);
+    const resolutionMs =
+      sensorResolutionMin !== null && sensorResolutionMin > 0
+        ? sensorResolutionMin * 60 * 1000
+        : this._inferPriceResolutionMs(uniqueRows);
     const lookbackMs = Math.max(
       5 * 60 * 1000,
       Math.min(2 * 60 * 60 * 1000, resolutionMs + 2 * 60 * 1000)

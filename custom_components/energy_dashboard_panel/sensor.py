@@ -537,8 +537,73 @@ class _TibberApiPriceSensor(SensorEntity):
             }
             return
 
-        query = """
-query EnergyDashboardPrices {
+        quarter_info_query = """
+query EnergyDashboardPricesQuarterInfo {
+  viewer {
+    homes {
+      id
+      appNickname
+      currentSubscription {
+        priceInfo(resolution: QUARTER_HOURLY) {
+          current {
+            total
+            energy
+            tax
+            startsAt
+            level
+          }
+          today {
+            total
+            energy
+            tax
+            startsAt
+            level
+          }
+          tomorrow {
+            total
+            energy
+            tax
+            startsAt
+            level
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+        quarter_range_query = """
+query EnergyDashboardPricesQuarterRange {
+  viewer {
+    homes {
+      id
+      appNickname
+      currentSubscription {
+        priceInfoRange(resolution: QUARTER_HOURLY, last: 384) {
+          nodes {
+            total
+            startsAt
+            level
+          }
+        }
+        priceInfo {
+          current {
+            total
+            energy
+            tax
+            startsAt
+            level
+          }
+        }
+      }
+    }
+  }
+}
+""".strip()
+
+        legacy_query = """
+query EnergyDashboardPricesLegacy {
   viewer {
     homes {
       id
@@ -577,24 +642,34 @@ query EnergyDashboardPrices {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
-        payload = {"query": query}
         session = async_get_clientsession(self._hass)
 
-        try:
-            resp = await session.post(_TIBBER_API_URL, headers=headers, json=payload)
-            data = await resp.json(content_type=None)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Tibber API request failed: %s", err)
-            self._attr_available = False
-            return
+        async def _run_query(query_text: str, variant: str) -> dict[str, Any] | None:
+            payload = {"query": query_text}
+            try:
+                resp = await session.post(_TIBBER_API_URL, headers=headers, json=payload)
+                data = await resp.json(content_type=None)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Tibber API request failed (%s): %s", variant, err)
+                return None
+            if not isinstance(data, dict):
+                _LOGGER.debug("Tibber API returned non-dict payload (%s)", variant)
+                return None
+            errors = data.get("errors")
+            if isinstance(errors, list) and errors:
+                _LOGGER.debug("Tibber API returned errors (%s): %s", variant, errors)
+                return None
+            return data
 
-        if not isinstance(data, dict):
-            self._attr_available = False
-            return
-
-        errors = data.get("errors")
-        if isinstance(errors, list) and errors:
-            _LOGGER.warning("Tibber API returned errors: %s", errors)
+        source_variant = "quarter_info"
+        data = await _run_query(quarter_info_query, source_variant)
+        if data is None:
+            source_variant = "quarter_range"
+            data = await _run_query(quarter_range_query, source_variant)
+        if data is None:
+            source_variant = "legacy"
+            data = await _run_query(legacy_query, source_variant)
+        if data is None:
             self._attr_available = False
             return
 
@@ -604,17 +679,71 @@ query EnergyDashboardPrices {
             self._attr_available = False
             return
 
-        price_info = (((selected_home.get("currentSubscription") or {}).get("priceInfo")) or {})
+        current_subscription = selected_home.get("currentSubscription") or {}
+        price_info = ((current_subscription.get("priceInfo")) or {})
         current = price_info.get("current") or {}
-        today = price_info.get("today") or []
-        tomorrow = price_info.get("tomorrow") or []
 
         current_total = _parse_number(current.get("total"))
+        current_level = current.get("level")
+        now_utc = dt_util.utcnow().astimezone(timezone.utc)
+
+        today: list[dict[str, Any]] = []
+        tomorrow: list[dict[str, Any]] = []
+        if source_variant == "quarter_info":
+            today = price_info.get("today") or []
+            tomorrow = price_info.get("tomorrow") or []
+        elif source_variant == "quarter_range":
+            range_nodes = ((current_subscription.get("priceInfoRange") or {}).get("nodes")) or []
+            if isinstance(range_nodes, list):
+                parsed_rows: list[tuple[datetime, float, Any]] = []
+                now_local_date = dt_util.now().date()
+                tomorrow_local_date = now_local_date + timedelta(days=1)
+
+                for row in range_nodes:
+                    if not isinstance(row, dict):
+                        continue
+                    starts_at = _parse_iso_utc(row.get("startsAt"))
+                    total = _parse_number(row.get("total"))
+                    if starts_at is None or total is None:
+                        continue
+                    level = row.get("level")
+                    normalized = {
+                        "total": total,
+                        "startsAt": starts_at.isoformat(),
+                        "level": level,
+                    }
+                    parsed_rows.append((starts_at, total, level))
+
+                    local_date = starts_at.astimezone().date()
+                    if local_date == now_local_date:
+                        today.append(normalized)
+                    elif local_date == tomorrow_local_date:
+                        tomorrow.append(normalized)
+
+                parsed_rows.sort(key=lambda item: item[0])
+                if current_total is None and parsed_rows:
+                    active: tuple[datetime, float, Any] | None = None
+                    for idx, row in enumerate(parsed_rows):
+                        start = row[0]
+                        next_start = parsed_rows[idx + 1][0] if idx + 1 < len(parsed_rows) else None
+                        if start <= now_utc and (next_start is None or now_utc < next_start):
+                            active = row
+                            break
+                    if active is None:
+                        past = [row for row in parsed_rows if row[0] <= now_utc]
+                        active = past[-1] if past else parsed_rows[0]
+                    current_total = active[1]
+                    if current_level is None:
+                        current_level = active[2]
+
+        if source_variant == "legacy" or (not today and not tomorrow):
+            today = price_info.get("today") or []
+            tomorrow = price_info.get("tomorrow") or []
+
         if current_total is None:
             self._attr_available = False
             return
 
-        now_utc = dt_util.utcnow().astimezone(timezone.utc)
         next_rows = []
         for row in list(today) + list(tomorrow):
             if not isinstance(row, dict):
@@ -636,13 +765,30 @@ query EnergyDashboardPrices {
                 min_today = min(values)
                 max_today = max(values)
 
+        resolution_minutes = None
+        starts = []
+        for row in list(today) + list(tomorrow):
+            if not isinstance(row, dict):
+                continue
+            starts_at = _parse_iso_utc(row.get("startsAt"))
+            if starts_at is None:
+                continue
+            starts.append(starts_at.timestamp())
+        starts = sorted(set(starts))
+        if len(starts) >= 2:
+            diffs = [b - a for a, b in zip(starts, starts[1:]) if (b - a) > 0]
+            if diffs:
+                resolution_minutes = int(round(min(diffs) / 60))
+
         self._attr_available = True
         self._attr_native_value = round(current_total, 5)
         self._attrs = {
             "source": "tibber_api",
+            "source_variant": source_variant,
             "home_id": selected_home.get("id"),
             "home_name": selected_home.get("appNickname"),
-            "price_level": current.get("level"),
+            "price_level": current_level,
+            "resolution_minutes": resolution_minutes,
             "raw_today": today,
             "raw_tomorrow": tomorrow,
             "today": today,
