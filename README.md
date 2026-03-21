@@ -53,6 +53,10 @@ energy_dashboard_panel:
   # Kostenloses Wetter (Open-Meteo)
   weather_location: "Berlin,DE"
 
+  # Akku-Restlaufzeit (Prognose im Dashboard)
+  battery_capacity_kwh: 10.2
+  battery_reserve_soc: 10
+
   # Tibber API (ohne Tibber Integration)
   # Bevorzugt: tibber_api_token (Alias: tibber_api_key)
   tibber_api_token: !secret tibber_api_token
@@ -99,6 +103,11 @@ Hinweis load_power:
   `load_power = grid_power + solar_power + max(battery_power, 0)`
 - Zusaetzlich wird ein Diagnosesensor erzeugt:
   `sensor.energy_dashboard_panel_resolved_load_power`
+
+Hinweis Akku-Prognose:
+
+- Restlaufzeit wird berechnet aus `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktueller Entladeleistung.
+- Falls `battery_capacity_kwh` fehlt, versucht das Panel die Kapazität aus Attributen von `battery_soc` zu lesen.
 
 ## GitHub: Repo erstellen und pushen
 

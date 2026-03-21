@@ -31,6 +31,8 @@ from .const import (
     CONF_GRID_SENSOR_MODE,
     CONF_INVERT_BATTERY_POWER_SIGN,
     CONF_INVERT_LOAD_POWER_SIGN,
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_RESERVE_SOC,
     CONF_LOAD_POWER,
     CONF_BATTERY_SENSOR_MODE,
     CONF_PRICE_CURRENT,
@@ -62,6 +64,7 @@ from .const import (
     DATA_LIFETIME_PLATFORM_LOADED,
     DATA_RUNTIME_SETTINGS_STORE,
     DEFAULT_BATTERY_SENSOR_MODE,
+    DEFAULT_BATTERY_RESERVE_SOC,
     DEFAULT_GRID_SENSOR_MODE,
     DEFAULT_INVERT_BATTERY_POWER_SIGN,
     DEFAULT_INVERT_LOAD_POWER_SIGN,
@@ -190,6 +193,13 @@ CONFIG_SCHEMA = vol.Schema(
                     CONF_INVERT_LOAD_POWER_SIGN,
                     default=DEFAULT_INVERT_LOAD_POWER_SIGN,
                 ): cv.boolean,
+                vol.Optional(CONF_BATTERY_CAPACITY_KWH): vol.All(
+                    vol.Coerce(float), vol.Range(min=0.1, max=1000.0)
+                ),
+                vol.Optional(
+                    CONF_BATTERY_RESERVE_SOC,
+                    default=DEFAULT_BATTERY_RESERVE_SOC,
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=99.0)),
                 vol.Optional(
                     CONF_GRID_SENSOR_MODE,
                     default=DEFAULT_GRID_SENSOR_MODE,
@@ -292,6 +302,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         "invert_load_power_sign": conf_effective.get(
             CONF_INVERT_LOAD_POWER_SIGN,
             DEFAULT_INVERT_LOAD_POWER_SIGN,
+        ),
+        "battery_capacity_kwh": conf_effective.get(CONF_BATTERY_CAPACITY_KWH),
+        "battery_reserve_soc": conf_effective.get(
+            CONF_BATTERY_RESERVE_SOC,
+            DEFAULT_BATTERY_RESERVE_SOC,
         ),
         "grid_sensor_mode": conf_effective.get(CONF_GRID_SENSOR_MODE, DEFAULT_GRID_SENSOR_MODE),
         "battery_sensor_mode": conf_effective.get(CONF_BATTERY_SENSOR_MODE, DEFAULT_BATTERY_SENSOR_MODE),

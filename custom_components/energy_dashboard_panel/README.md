@@ -43,6 +43,10 @@ energy_dashboard_panel:
   # tibber_home_id: "optional"
   # price_fallback_entity: sensor.dein_strompreis
 
+  # Akku-Restlaufzeit (Prognose)
+  battery_capacity_kwh: 10.2
+  battery_reserve_soc: 10
+
   # Sensor-Modi: auto | signed | dual
   grid_sensor_mode: auto
   battery_sensor_mode: signed
@@ -93,6 +97,11 @@ Hinweis load_power:
   `load_power = grid_power + solar_power + max(battery_power, 0)`
 - Der aufgeloeste Wert steht als Diagnosesensor bereit:
   `sensor.energy_dashboard_panel_resolved_load_power`
+
+Hinweis Akku-Prognose:
+
+- Restlaufzeit nutzt `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktuelle Entladeleistung.
+- Ohne `battery_capacity_kwh` wird versucht, die Kapazität aus `battery_soc`-Attributen zu lesen.
 
 ## Erzeugte Sensoren (Auszug)
 

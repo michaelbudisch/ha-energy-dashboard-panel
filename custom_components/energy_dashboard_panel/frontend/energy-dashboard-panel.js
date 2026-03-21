@@ -524,6 +524,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     setText("background_image");
     setText("weather_location");
     setText("tibber_home_id");
+    setText("battery_capacity_kwh");
+    setText("battery_reserve_soc");
     setEntity("weather_entity");
     setEntity("price_entity");
     setEntity("price_fallback_entity");
@@ -747,6 +749,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
       weather_location: String(cfg.weather_location || ""),
       tibber_home_id: String(cfg.tibber_home_id || ""),
       tibber_token_configured: Boolean(cfg.tibber_token_configured),
+      battery_capacity_kwh:
+        cfg.battery_capacity_kwh === null || cfg.battery_capacity_kwh === undefined
+          ? ""
+          : String(cfg.battery_capacity_kwh),
+      battery_reserve_soc:
+        cfg.battery_reserve_soc === null || cfg.battery_reserve_soc === undefined
+          ? "10"
+          : String(cfg.battery_reserve_soc),
       price_entity: String(cfg.price_entity || ""),
       price_fallback_entity: String(cfg.price_fallback_entity || ""),
       grid_sensor_mode: this._normalizeSensorMode(cfg.grid_sensor_mode),
@@ -835,6 +845,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
       weather_entity: toEntity("weather_entity"),
       weather_location: toText("weather_location"),
       tibber_home_id: toText("tibber_home_id"),
+      battery_capacity_kwh: toText("battery_capacity_kwh"),
+      battery_reserve_soc: toText("battery_reserve_soc"),
       price_entity: toEntity("price_entity"),
       price_fallback_entity: toEntity("price_fallback_entity"),
       grid_sensor_mode: this._settingsInputValue(form, "grid_sensor_mode") || "auto",
@@ -1042,6 +1054,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
                   name: "tibber_home_id",
                   value: draft?.tibber_home_id || "",
                   placeholder: "optional_home_id",
+                })}
+                ${this._settingsInputRow({
+                  label: "Akku Kapazität (kWh)",
+                  name: "battery_capacity_kwh",
+                  value: draft?.battery_capacity_kwh || "",
+                  placeholder: "z.B. 10.2",
+                })}
+                ${this._settingsInputRow({
+                  label: "Akku Reserve SOC (%)",
+                  name: "battery_reserve_soc",
+                  value: draft?.battery_reserve_soc || "10",
+                  placeholder: "10",
                 })}
                 ${this._settingsInputRow({
                   label: "Tibber Token löschen",
@@ -1476,6 +1500,157 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return null;
     }
     return this._powerToWatts(raw, stateObj.attributes?.unit_of_measurement);
+  }
+
+  _parseNumber(raw) {
+    if (raw === null || raw === undefined) {
+      return null;
+    }
+    const txt = String(raw).trim();
+    if (!txt) {
+      return null;
+    }
+    const parsed = Number.parseFloat(txt.replace(",", ".").replace(/[^\d+\-.]/g, ""));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  _energyToKwh(value, unitRaw, keyHint = "") {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return null;
+    }
+    const unit = String(unitRaw || "")
+      .toLowerCase()
+      .replace(/\s+/g, "");
+    const hint = String(keyHint || "").toLowerCase();
+    if (unit.includes("mwh") || hint.includes("mwh")) {
+      return n * 1000;
+    }
+    if (unit.includes("kwh") || hint.includes("kwh")) {
+      return n;
+    }
+    if (unit.includes("wh") || hint.endsWith("_wh") || hint.includes("energy_full")) {
+      return n / 1000;
+    }
+    return n;
+  }
+
+  _batteryCapacityFromSocAttributes(sensors = this._sensors()) {
+    const socState = this._stateObj(sensors?.battery_soc);
+    const attrs = socState?.attributes || {};
+    const candidates = [
+      "battery_capacity_kwh",
+      "capacity_kwh",
+      "nominal_capacity_kwh",
+      "usable_capacity_kwh",
+      "total_capacity_kwh",
+      "battery_capacity_wh",
+      "capacity_wh",
+      "nominal_capacity_wh",
+      "usable_capacity_wh",
+      "energy_full",
+      "energy_full_design",
+      "max_energy_wh",
+      "battery_capacity",
+      "capacity",
+      "nominal_capacity",
+      "usable_capacity",
+      "max_energy",
+    ];
+
+    for (let i = 0; i < candidates.length; i += 1) {
+      const key = candidates[i];
+      if (!Object.prototype.hasOwnProperty.call(attrs, key)) {
+        continue;
+      }
+      const num = this._parseNumber(attrs[key]);
+      if (num === null || num <= 0) {
+        continue;
+      }
+      const kwh = this._energyToKwh(num, null, key);
+      if (kwh !== null && kwh > 0) {
+        return kwh;
+      }
+    }
+    return null;
+  }
+
+  _batteryCapacityKwh(sensors = this._sensors(), cfg = this._panelConfig()) {
+    const fromConfig = this._parseNumber(cfg?.battery_capacity_kwh);
+    if (fromConfig !== null && fromConfig > 0) {
+      return fromConfig;
+    }
+    return this._batteryCapacityFromSocAttributes(sensors);
+  }
+
+  _formatDurationHours(hours) {
+    if (!Number.isFinite(hours) || hours <= 0) {
+      return "0m";
+    }
+    const totalMin = Math.max(0, Math.round(hours * 60));
+    const days = Math.floor(totalMin / (24 * 60));
+    const hoursPart = Math.floor((totalMin % (24 * 60)) / 60);
+    const mins = totalMin % 60;
+    if (days > 0) {
+      if (hoursPart > 0) {
+        return `${days}d ${hoursPart}h`;
+      }
+      return `${days}d`;
+    }
+    if (hoursPart > 0) {
+      return `${hoursPart}h ${mins}m`;
+    }
+    return `${mins}m`;
+  }
+
+  _batteryRuntimeEstimate({
+    sensors = this._sensors(),
+    soc = null,
+    batteryDischarge = null,
+  }) {
+    const cfg = this._panelConfig();
+    const capacityKwh = this._batteryCapacityKwh(sensors, cfg);
+    const reserveSocRaw = this._parseNumber(cfg?.battery_reserve_soc);
+    const reserveSoc = this._clamp(reserveSocRaw ?? 10, 0, 99);
+
+    if (soc === null) {
+      return {
+        label: "--",
+        detail: "SOC fehlt",
+      };
+    }
+    if (capacityKwh === null || capacityKwh <= 0) {
+      return {
+        label: "--",
+        detail: "Akku-Kapazität fehlt",
+      };
+    }
+
+    const usableSocPct = this._clamp(soc - reserveSoc, 0, 100);
+    const usableKwh = capacityKwh * (usableSocPct / 100);
+    const dischargeW = Math.max(0, Number(batteryDischarge) || 0);
+
+    if (dischargeW < 30) {
+      return {
+        label: "--",
+        detail: `Nicht am Entladen · ${usableKwh.toFixed(2)} kWh verfügbar`,
+      };
+    }
+    if (usableKwh <= 0.001) {
+      return {
+        label: "0m",
+        detail: "Reserve erreicht",
+      };
+    }
+
+    const hours = usableKwh / (dischargeW / 1000);
+    return {
+      label: this._formatDurationHours(hours),
+      detail: `bei ${this._formatPower(dischargeW)} · ${usableKwh.toFixed(2)} kWh`,
+    };
   }
 
   _powerScale(entityId) {
@@ -4176,6 +4351,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       batteryDischarge,
       houseSources,
       chargeSource,
+      batteryRuntime,
       priceInfo,
       balanceError,
       balanceQuality,
@@ -4198,6 +4374,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     this._setBoundText("grid-status", this._gridStatus(grid));
     this._setBoundText("battery-status", this._batteryStatus(battery));
+    this._setBoundText("battery-runtime", batteryRuntime.label);
+    this._setBoundText("battery-runtime-detail", batteryRuntime.detail);
     this._setBoundText("charge-label", chargeSource.label);
     this._setBoundText("charge-detail", chargeSource.detail);
 
@@ -4410,6 +4588,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const gridExport = gridFlow.exportPower;
     const batteryCharge = batteryFlow.chargePower;
     const batteryDischarge = batteryFlow.dischargePower;
+    const batteryRuntime = this._batteryRuntimeEstimate({
+      sensors,
+      soc,
+      batteryDischarge,
+    });
     const extraChips = this._extraChips().map((chip) => {
       const raw = this._numericPowerState(chip.entity);
       const power = raw === null ? null : Math.max(0, raw);
@@ -4504,6 +4687,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       batteryDischarge,
       houseSources,
       chargeSource,
+      batteryRuntime,
       priceInfo,
       balanceError,
       balanceQuality,
@@ -5735,6 +5919,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <article class="card">
             <div class="k icon-label"><ha-icon icon="mdi:battery"></ha-icon><span>Batteriestatus</span></div>
             <div class="v" data-bind="battery-status">${this._batteryStatus(battery)}</div>
+            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;">Restlaufzeit (Prognose)</div>
+            <div class="v" data-bind="battery-runtime">${batteryRuntime.label}</div>
+            <div class="k" style="margin-top:4px;text-transform:none;letter-spacing:0;" data-bind="battery-runtime-detail">${batteryRuntime.detail}</div>
           </article>
           <article class="card">
             <div class="k icon-label"><ha-icon icon="mdi:battery-charging-medium"></ha-icon><span>Akkuladung Quelle</span></div>
