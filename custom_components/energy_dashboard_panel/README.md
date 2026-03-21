@@ -7,6 +7,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Visual Layer mit Drag-and-Drop Chips
 - Sensor-Mapping fuer signed oder dual (Import/Export, Laden/Entladen)
 - Tibber Preisdaten direkt per API Token
+- Tibber Token direkt im Dashboard-Einstellungsdialog setzbar (Backend-Storage)
 - Wetter-Badge via `weather_entity` oder kostenlos per `weather_location` (Open-Meteo)
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf, Sparverlauf, Monatsreport (Monat-Tab) und Lifetime-Sensoren
@@ -37,6 +38,7 @@ energy_dashboard_panel:
   # weather_entity: weather.home
 
   # Preisquelle:
+  # Bevorzugt: tibber_api_token (Alias: tibber_api_key)
   tibber_api_token: !secret tibber_api_token
   # tibber_home_id: "optional"
   # price_fallback_entity: sensor.dein_strompreis
@@ -76,8 +78,13 @@ Hinweis Netzsensoren:
 - In `grid_sensor_mode: auto` wird `grid_power` (Zwei-Wege-Sensor) bevorzugt.
 - Wenn `grid_power` fehlt oder keine Zahl liefert, nutzt das Panel automatisch
   `sensor.energy_dashboard_panel_tibber_grid_power` als Live-Fallback
-  (wenn `tibber_api_token` gesetzt ist und Tibber-Livewerte verfügbar sind).
+  (wenn `tibber_api_token`/`tibber_api_key` gesetzt ist und Tibber-Livewerte verfügbar sind).
 - `grid_import_power` und `grid_export_power` dienen zusätzlich als Fallback.
+
+Hinweis Tibber Token:
+
+- Token kann in `configuration.yaml` gesetzt werden.
+- Oder direkt im Panel unter `Einstellungen` gespeichert werden (HA Backend).
 
 Hinweis load_power:
 
@@ -89,8 +96,8 @@ Hinweis load_power:
 
 ## Erzeugte Sensoren (Auszug)
 
-- `sensor.energy_dashboard_panel_tibber_price` (wenn `tibber_api_token` gesetzt)
-- `sensor.energy_dashboard_panel_tibber_grid_power` (Live-Netzleistung, signed, wenn `tibber_api_token` gesetzt)
+- `sensor.energy_dashboard_panel_tibber_price` (wenn `tibber_api_token`/`tibber_api_key` gesetzt)
+- `sensor.energy_dashboard_panel_tibber_grid_power` (Live-Netzleistung, signed, wenn `tibber_api_token`/`tibber_api_key` gesetzt)
 - `sensor.energy_dashboard_panel_open_meteo_weather` (wenn `weather_location` gesetzt)
 - `sensor.energy_dashboard_panel_resolved_load_power` (Diagnose, automatisch aufgeloeste Last)
 - `sensor.energy_dashboard_panel_lifetime_smart_savings_eur`

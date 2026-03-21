@@ -4,6 +4,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 
 - Solar, Netz, Batterie, Hauslast (inkl. signed/dual Sensor-Logik)
 - Tibber Preislogik direkt per API Token
+- Tibber Token direkt im Dashboard-Einstellungsdialog setzbar (Backend-Storage)
 - Open-Meteo Wetter (kostenlos, nur Ort noetig)
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
 - Light/Dark Mode Umschalter direkt im Dashboard
@@ -53,6 +54,7 @@ energy_dashboard_panel:
   weather_location: "Berlin,DE"
 
   # Tibber API (ohne Tibber Integration)
+  # Bevorzugt: tibber_api_token (Alias: tibber_api_key)
   tibber_api_token: !secret tibber_api_token
   # tibber_home_id: "optional_home_id"
 
@@ -82,8 +84,13 @@ Hinweis Netzsensoren:
 - In `grid_sensor_mode: auto` wird `sensors.grid_power` (Zwei-Wege, signed) bevorzugt.
 - Wenn `grid_power` fehlt oder keine Zahl liefert, nutzt das Panel automatisch
   `sensor.energy_dashboard_panel_tibber_grid_power` als Live-Fallback
-  (wenn `tibber_api_token` gesetzt ist und Tibber-Livewerte verfügbar sind).
+  (wenn `tibber_api_token`/`tibber_api_key` gesetzt ist und Tibber-Livewerte verfügbar sind).
 - `grid_import_power`/`grid_export_power` bleiben zusätzlich als Fallback nutzbar.
+
+Hinweis Tibber Token:
+
+- Token kann weiterhin in `configuration.yaml` gesetzt werden.
+- Alternativ im Dashboard über `Einstellungen` eintragen (wird im HA Backend gespeichert).
 
 Hinweis load_power:
 
@@ -107,4 +114,4 @@ git push -u origin main
 ## Sicherheit
 
 - Niemals API Tokens direkt committen.
-- Immer `!secret tibber_api_token` verwenden und `secrets.yaml` lokal halten.
+- Immer `!secret tibber_api_token` (oder `tibber_api_key`) verwenden und `secrets.yaml` lokal halten.

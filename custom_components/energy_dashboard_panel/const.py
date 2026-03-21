@@ -11,12 +11,15 @@ SIDEBAR_TITLE_DEFAULT = "Energie"
 SIDEBAR_ICON_DEFAULT = "mdi:solar-power-variant"
 STORAGE_VERSION = 1
 STORAGE_KEY_LIFETIME = f"{DOMAIN}_lifetime"
+STORAGE_KEY_RUNTIME_SETTINGS = f"{DOMAIN}_runtime_settings"
 
 DATA_CONFIG = "config"
 DATA_LIFETIME_ACCUMULATOR = "lifetime_accumulator"
 DATA_LIFETIME_PLATFORM_LOADED = "lifetime_platform_loaded"
+DATA_RUNTIME_SETTINGS_STORE = "runtime_settings_store"
 
 SERVICE_RESET_LIFETIME_SAVINGS = "reset_lifetime_savings"
+SERVICE_SET_TIBBER_CREDENTIALS = "set_tibber_credentials"
 
 ENTITY_LIFETIME_SMART_SAVINGS_EUR = f"sensor.{DOMAIN}_lifetime_smart_savings_eur"
 ENTITY_LIFETIME_SOLAR_DIRECT_EUR = f"sensor.{DOMAIN}_lifetime_solar_direct_savings_eur"
@@ -52,6 +55,7 @@ CONF_BACKGROUND_IMAGE = "background_image"
 CONF_PRICE_ENTITY = "price_entity"
 CONF_PRICE_FALLBACK_ENTITY = "price_fallback_entity"
 CONF_TIBBER_API_TOKEN = "tibber_api_token"
+CONF_TIBBER_API_KEY = "tibber_api_key"
 CONF_TIBBER_HOME_ID = "tibber_home_id"
 CONF_EXTRA_CHIPS = "extra_chips"
 CONF_USE_SIGNED_BATTERY_POWER = "use_signed_battery_power"

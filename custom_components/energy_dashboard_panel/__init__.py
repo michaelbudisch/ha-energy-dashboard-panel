@@ -9,8 +9,9 @@ import voluptuous as vol
 
 from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 try:
     from homeassistant.helpers.discovery import async_load_platform as _async_load_platform
@@ -49,6 +50,7 @@ from .const import (
     CONF_SIDEBAR_ICON,
     CONF_SIDEBAR_TITLE,
     CONF_SOLAR_POWER,
+    CONF_TIBBER_API_KEY,
     CONF_TIBBER_API_TOKEN,
     CONF_TIBBER_HOME_ID,
     CONF_URL_PATH,
@@ -58,6 +60,7 @@ from .const import (
     DATA_CONFIG,
     DATA_LIFETIME_ACCUMULATOR,
     DATA_LIFETIME_PLATFORM_LOADED,
+    DATA_RUNTIME_SETTINGS_STORE,
     DEFAULT_BATTERY_SENSOR_MODE,
     DEFAULT_GRID_SENSOR_MODE,
     DEFAULT_INVERT_BATTERY_POWER_SIGN,
@@ -67,18 +70,29 @@ from .const import (
     DEFAULT_USE_SIGNED_BATTERY_POWER,
     DOMAIN,
     ENTITY_OPEN_METEO_WEATHER,
+    ENTITY_TIBBER_API_GRID_POWER,
     ENTITY_TIBBER_API_PRICE,
     PANEL_ELEMENT_NAME,
     PANEL_MODULE_FILE,
     PANEL_STATIC_PATH,
     PANEL_URL_PATH_DEFAULT,
     SERVICE_RESET_LIFETIME_SAVINGS,
+    SERVICE_SET_TIBBER_CREDENTIALS,
     SIDEBAR_ICON_DEFAULT,
     SIDEBAR_TITLE_DEFAULT,
+    STORAGE_KEY_RUNTIME_SETTINGS,
 )
 
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _clean_non_empty(raw: object) -> str | None:
+    """Normalize text config values to non-empty strings."""
+    if not isinstance(raw, str):
+        return None
+    txt = raw.strip()
+    return txt or None
 
 
 _OPTIONAL_ENTITY_SCHEMA = vol.Any(None, cv.entity_id)
@@ -162,6 +176,7 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_PRICE_ENTITY): cv.entity_id,
                 vol.Optional(CONF_PRICE_FALLBACK_ENTITY): cv.entity_id,
                 vol.Optional(CONF_TIBBER_API_TOKEN): cv.string,
+                vol.Optional(CONF_TIBBER_API_KEY): cv.string,
                 vol.Optional(CONF_TIBBER_HOME_ID): cv.string,
                 vol.Optional(
                     CONF_USE_SIGNED_BATTERY_POWER,
@@ -220,55 +235,84 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     except OSError:
         module_version = "0"
     module_url = f"{PANEL_STATIC_PATH}/{PANEL_MODULE_FILE}?v={module_version}"
+
+    runtime_store: Store[dict[str, str]] = Store(hass, 1, STORAGE_KEY_RUNTIME_SETTINGS)
+    runtime_settings = await runtime_store.async_load() or {}
+    runtime_token = _clean_non_empty(
+        runtime_settings.get(CONF_TIBBER_API_TOKEN) or runtime_settings.get(CONF_TIBBER_API_KEY)
+    )
+    runtime_home_id = _clean_non_empty(runtime_settings.get(CONF_TIBBER_HOME_ID))
+
+    conf_effective = dict(conf)
+    yaml_token = _clean_non_empty(
+        conf_effective.get(CONF_TIBBER_API_TOKEN) or conf_effective.get(CONF_TIBBER_API_KEY)
+    )
+    effective_token = yaml_token or runtime_token
+    if effective_token:
+        conf_effective[CONF_TIBBER_API_TOKEN] = effective_token
+    else:
+        conf_effective.pop(CONF_TIBBER_API_TOKEN, None)
+    conf_effective.pop(CONF_TIBBER_API_KEY, None)
+
+    yaml_home_id = _clean_non_empty(conf_effective.get(CONF_TIBBER_HOME_ID))
+    effective_home_id = yaml_home_id or runtime_home_id
+    if effective_home_id:
+        conf_effective[CONF_TIBBER_HOME_ID] = effective_home_id
+    else:
+        conf_effective.pop(CONF_TIBBER_HOME_ID, None)
+
     price_entity = None
-    if conf.get(CONF_TIBBER_API_TOKEN):
+    if conf_effective.get(CONF_TIBBER_API_TOKEN):
         price_entity = ENTITY_TIBBER_API_PRICE
     else:
-        price_entity = conf.get(CONF_PRICE_FALLBACK_ENTITY) or conf.get(CONF_PRICE_ENTITY)
+        price_entity = conf_effective.get(CONF_PRICE_FALLBACK_ENTITY) or conf_effective.get(CONF_PRICE_ENTITY)
 
-    weather_entity = conf.get(CONF_WEATHER_ENTITY)
-    weather_location = conf.get(CONF_WEATHER_LOCATION)
+    weather_entity = conf_effective.get(CONF_WEATHER_ENTITY)
+    weather_location = conf_effective.get(CONF_WEATHER_LOCATION)
     if not weather_entity and isinstance(weather_location, str) and weather_location.strip():
         weather_entity = ENTITY_OPEN_METEO_WEATHER
 
     panel_config = {
-        "title": conf[CONF_SIDEBAR_TITLE],
-        "sensors": conf[CONF_SENSORS],
+        "title": conf_effective[CONF_SIDEBAR_TITLE],
+        "sensors": conf_effective[CONF_SENSORS],
         "weather_entity": weather_entity,
         "weather_location": weather_location,
-        "background_image": conf.get(CONF_BACKGROUND_IMAGE),
+        "background_image": conf_effective.get(CONF_BACKGROUND_IMAGE),
         "price_entity": price_entity,
-        "price_fallback_entity": conf.get(CONF_PRICE_FALLBACK_ENTITY),
-        "extra_chips": conf.get(CONF_EXTRA_CHIPS, []),
-        "use_signed_battery_power": conf.get(
+        "price_fallback_entity": conf_effective.get(CONF_PRICE_FALLBACK_ENTITY),
+        "extra_chips": conf_effective.get(CONF_EXTRA_CHIPS, []),
+        "use_signed_battery_power": conf_effective.get(
             CONF_USE_SIGNED_BATTERY_POWER,
             DEFAULT_USE_SIGNED_BATTERY_POWER,
         ),
-        "invert_battery_power_sign": conf.get(
+        "invert_battery_power_sign": conf_effective.get(
             CONF_INVERT_BATTERY_POWER_SIGN,
             DEFAULT_INVERT_BATTERY_POWER_SIGN,
         ),
-        "invert_load_power_sign": conf.get(
+        "invert_load_power_sign": conf_effective.get(
             CONF_INVERT_LOAD_POWER_SIGN,
             DEFAULT_INVERT_LOAD_POWER_SIGN,
         ),
-        "grid_sensor_mode": conf.get(CONF_GRID_SENSOR_MODE, DEFAULT_GRID_SENSOR_MODE),
-        "battery_sensor_mode": conf.get(CONF_BATTERY_SENSOR_MODE, DEFAULT_BATTERY_SENSOR_MODE),
+        "grid_sensor_mode": conf_effective.get(CONF_GRID_SENSOR_MODE, DEFAULT_GRID_SENSOR_MODE),
+        "battery_sensor_mode": conf_effective.get(CONF_BATTERY_SENSOR_MODE, DEFAULT_BATTERY_SENSOR_MODE),
+        "tibber_home_id": conf_effective.get(CONF_TIBBER_HOME_ID),
+        "tibber_token_configured": bool(conf_effective.get(CONF_TIBBER_API_TOKEN)),
     }
 
     await panel_custom.async_register_panel(
         hass=hass,
-        frontend_url_path=conf[CONF_URL_PATH],
+        frontend_url_path=conf_effective[CONF_URL_PATH],
         webcomponent_name=PANEL_ELEMENT_NAME,
-        sidebar_title=conf[CONF_SIDEBAR_TITLE],
-        sidebar_icon=conf[CONF_SIDEBAR_ICON],
+        sidebar_title=conf_effective[CONF_SIDEBAR_TITLE],
+        sidebar_icon=conf_effective[CONF_SIDEBAR_ICON],
         module_url=module_url,
-        require_admin=conf[CONF_REQUIRE_ADMIN],
+        require_admin=conf_effective[CONF_REQUIRE_ADMIN],
         config=panel_config,
     )
 
     runtime = hass.data.setdefault(DOMAIN, {})
-    runtime[DATA_CONFIG] = conf
+    runtime[DATA_CONFIG] = conf_effective
+    runtime[DATA_RUNTIME_SETTINGS_STORE] = runtime_store
 
     if not runtime.get(DATA_LIFETIME_PLATFORM_LOADED):
         loaded = False
@@ -295,6 +339,67 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             DOMAIN,
             SERVICE_RESET_LIFETIME_SAVINGS,
             _handle_reset_lifetime,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_TIBBER_CREDENTIALS):
+
+        async def _handle_set_tibber_credentials(call: ServiceCall) -> None:
+            runtime_local = hass.data.get(DOMAIN, {})
+            conf_local = runtime_local.get(DATA_CONFIG)
+            if not isinstance(conf_local, dict):
+                return
+
+            token = _clean_non_empty(call.data.get("token"))
+            home_id = _clean_non_empty(call.data.get("home_id"))
+            clear_token = bool(call.data.get("clear_token"))
+
+            if clear_token:
+                conf_local.pop(CONF_TIBBER_API_TOKEN, None)
+            elif token:
+                conf_local[CONF_TIBBER_API_TOKEN] = token
+
+            if "home_id" in call.data:
+                if home_id:
+                    conf_local[CONF_TIBBER_HOME_ID] = home_id
+                else:
+                    conf_local.pop(CONF_TIBBER_HOME_ID, None)
+
+            store_local = runtime_local.get(DATA_RUNTIME_SETTINGS_STORE)
+            if isinstance(store_local, Store):
+                payload: dict[str, str] = {}
+                effective_token_local = _clean_non_empty(conf_local.get(CONF_TIBBER_API_TOKEN))
+                effective_home_local = _clean_non_empty(conf_local.get(CONF_TIBBER_HOME_ID))
+                if effective_token_local:
+                    payload[CONF_TIBBER_API_TOKEN] = effective_token_local
+                if effective_home_local:
+                    payload[CONF_TIBBER_HOME_ID] = effective_home_local
+                await store_local.async_save(payload)
+
+            hass.async_create_task(
+                hass.services.async_call(
+                    "homeassistant",
+                    "update_entity",
+                    {
+                        "entity_id": [
+                            ENTITY_TIBBER_API_PRICE,
+                            ENTITY_TIBBER_API_GRID_POWER,
+                        ]
+                    },
+                    blocking=False,
+                )
+            )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_TIBBER_CREDENTIALS,
+            _handle_set_tibber_credentials,
+            schema=vol.Schema(
+                {
+                    vol.Optional("token"): vol.Any(None, cv.string),
+                    vol.Optional("home_id"): vol.Any(None, cv.string),
+                    vol.Optional("clear_token", default=False): cv.boolean,
+                }
+            ),
         )
 
     return True

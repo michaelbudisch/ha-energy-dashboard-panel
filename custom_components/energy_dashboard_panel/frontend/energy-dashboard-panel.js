@@ -45,6 +45,9 @@ const DIAG_SENSORS = {
   balance_quality: "sensor.energy_dashboard_panel_balance_quality_pct",
   backfill_pending: "sensor.energy_dashboard_panel_price_backfill_pending",
 };
+const EDP_DOMAIN = "energy_dashboard_panel";
+const EDP_SERVICE_SET_TIBBER = "set_tibber_credentials";
+const TIBBER_PRICE_SENSOR = "sensor.energy_dashboard_panel_tibber_price";
 const TIBBER_LIVE_GRID_SENSOR = "sensor.energy_dashboard_panel_tibber_grid_power";
 
 const WEATHER_ICON = {
@@ -520,6 +523,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     setText("title");
     setText("background_image");
     setText("weather_location");
+    setText("tibber_home_id");
     setEntity("weather_entity");
     setEntity("price_entity");
     setEntity("price_fallback_entity");
@@ -741,6 +745,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
       background_image: String(cfg.background_image || ""),
       weather_entity: String(cfg.weather_entity || ""),
       weather_location: String(cfg.weather_location || ""),
+      tibber_home_id: String(cfg.tibber_home_id || ""),
+      tibber_token_configured: Boolean(cfg.tibber_token_configured),
       price_entity: String(cfg.price_entity || ""),
       price_fallback_entity: String(cfg.price_fallback_entity || ""),
       grid_sensor_mode: this._normalizeSensorMode(cfg.grid_sensor_mode),
@@ -803,11 +809,32 @@ class HaEnergyDashboardPanel extends HTMLElement {
       }
     }
 
+    const tokenInput = this._settingsInputValue(form, "tibber_api_token");
+    const clearToken = this._settingsCheckboxValue(form, "tibber_clear_token");
+    if (clearToken && tokenInput) {
+      return { error: "Bitte entweder neuen Tibber Token setzen oder Token löschen." };
+    }
+    const currentHomeId = String(this._panelConfig().tibber_home_id || "").trim();
+    const homeIdInput = this._settingsInputValue(form, "tibber_home_id");
+    const homeChanged = homeIdInput !== currentHomeId;
+    const runtimePayload = {};
+    if (clearToken) {
+      runtimePayload.clear_token = true;
+    }
+    if (tokenInput) {
+      runtimePayload.token = tokenInput;
+    }
+    if (homeChanged) {
+      runtimePayload.home_id = homeIdInput || "";
+    }
+    const hasRuntimeChange = clearToken || Boolean(tokenInput) || homeChanged;
+
     const ui = {
       title: toText("title"),
       background_image: toText("background_image"),
       weather_entity: toEntity("weather_entity"),
       weather_location: toText("weather_location"),
+      tibber_home_id: toText("tibber_home_id"),
       price_entity: toEntity("price_entity"),
       price_fallback_entity: toEntity("price_fallback_entity"),
       grid_sensor_mode: this._settingsInputValue(form, "grid_sensor_mode") || "auto",
@@ -827,10 +854,31 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ui.price_sensors[key] = toEntity(`price_${key}`);
     });
 
-    return { value: this._normalizeUiConfig(ui) };
+    return {
+      value: this._normalizeUiConfig(ui),
+      runtime: hasRuntimeChange ? runtimePayload : null,
+    };
   }
 
-  _saveSettingsFromForm() {
+  async _saveRuntimeSettings(payload) {
+    if (!payload || !this._hass?.callService) {
+      return;
+    }
+    await this._hass.callService(EDP_DOMAIN, EDP_SERVICE_SET_TIBBER, payload);
+    if (this._panel?.config && typeof this._panel.config === "object") {
+      if (Object.prototype.hasOwnProperty.call(payload, "home_id")) {
+        this._panel.config.tibber_home_id = payload.home_id || null;
+      }
+      if (payload.clear_token) {
+        this._panel.config.tibber_token_configured = false;
+      }
+      if (payload.token) {
+        this._panel.config.tibber_token_configured = true;
+      }
+    }
+  }
+
+  async _saveSettingsFromForm() {
     const form = this.shadowRoot?.querySelector("#settings-form");
     if (!form) {
       return;
@@ -838,6 +886,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const result = this._buildUiConfigFromSettingsForm(form);
     if (result.error) {
       this._settingsError = result.error;
+      this._requestRender({ immediate: true, full: true });
+      return;
+    }
+    try {
+      await this._saveRuntimeSettings(result.runtime);
+    } catch (error) {
+      this._settingsError = `Tibber Einstellungen konnten nicht gespeichert werden: ${error?.message || error}`;
       this._requestRender({ immediate: true, full: true });
       return;
     }
@@ -886,6 +941,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     listId = "",
     placeholder = "",
     kind = "text",
+    inputType = "text",
     checked = false,
     options = [],
   }) {
@@ -917,7 +973,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       <label class="settings-row">
         <span>${this._escapeHtml(label)}</span>
         <input
-          type="text"
+          type="${this._escapeHtml(inputType || "text")}"
           name="${this._escapeHtml(name)}"
           value="${this._escapeHtml(value)}"
           ${listId ? `list="${this._escapeHtml(listId)}"` : ""}
@@ -947,13 +1003,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <form id="settings-form" class="settings-form" onsubmit="return false;">
             <section class="settings-block">
               <h4>Allgemein</h4>
-              <div class="settings-note">Hinweis: <code>tibber_api_token</code> bleibt aktuell in <code>configuration.yaml</code>.</div>
+              <div class="settings-note">Tibber Token gesetzt: <strong>${draft?.tibber_token_configured ? "Ja" : "Nein"}</strong> · Speicherung im HA Backend. Sidebar-Titel links kommt aus YAML (<code>sidebar_title</code>) und wird nicht live geändert.</div>
               <div class="settings-grid">
                 ${this._settingsInputRow({
-                  label: "Titel",
+                  label: "Dashboard Titel (intern)",
                   name: "title",
                   value: draft?.title || "",
-                  placeholder: "Energie",
+                  placeholder: "Visual Layer",
                 })}
                 ${this._settingsInputRow({
                   label: "Hintergrundbild URL",
@@ -973,6 +1029,25 @@ class HaEnergyDashboardPanel extends HTMLElement {
                   name: "weather_location",
                   value: draft?.weather_location || "",
                   placeholder: "Berlin,DE",
+                })}
+                ${this._settingsInputRow({
+                  label: "Tibber API Token",
+                  name: "tibber_api_token",
+                  value: "",
+                  inputType: "password",
+                  placeholder: "nur eintragen, wenn ändern",
+                })}
+                ${this._settingsInputRow({
+                  label: "Tibber Home ID (optional)",
+                  name: "tibber_home_id",
+                  value: draft?.tibber_home_id || "",
+                  placeholder: "optional_home_id",
+                })}
+                ${this._settingsInputRow({
+                  label: "Tibber Token löschen",
+                  name: "tibber_clear_token",
+                  kind: "checkbox",
+                  checked: false,
                 })}
                 ${this._settingsInputRow({
                   label: "Preis Entity",
@@ -1261,6 +1336,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ids.push(this._priceEntityId());
     ids.push(this._weatherEntityId());
     ids.push(...Object.values(LIFETIME_SENSORS));
+    ids.push(TIBBER_PRICE_SENSOR);
     ids.push(TIBBER_LIVE_GRID_SENSOR);
     extras.forEach((chip) => ids.push(chip.entity));
 
@@ -1761,7 +1837,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const cfg = this._panelConfig();
     const explicit = cfg.price_entity || cfg.price_fallback_entity || null;
     this._cachedAutoPriceEntity = null;
-    return explicit;
+    if (explicit) {
+      return explicit;
+    }
+    if (this._stateObj(TIBBER_PRICE_SENSOR)) {
+      return TIBBER_PRICE_SENSOR;
+    }
+    return null;
   }
 
   _trendPriceConfig() {
@@ -1993,7 +2075,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         available: false,
         entityId: null,
         label: "Kein Preis-Sensor",
-        detail: "tibber_api_token oder price_fallback_entity konfigurieren",
+        detail: "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
       };
     }
 
@@ -2102,7 +2184,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         available: false,
         entityId: currentEntityId || null,
         label: "Preis-Sensor ohne Werte",
-        detail: currentEntityId || "tibber_api_token oder price_fallback_entity konfigurieren",
+        detail: currentEntityId || "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
       };
     }
 
@@ -4205,7 +4287,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       })
     );
     saveSettingsBtn?.addEventListener("click", () => {
-      this._saveSettingsFromForm();
+      void this._saveSettingsFromForm();
     });
     resetSettingsBtn?.addEventListener("click", () => {
       this._resetSettingsToYamlFallback();
@@ -5578,7 +5660,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         <section class="scene-wrap block-scene">
           <div class="scene-toolbar">
-            <div class="scene-title">Visual Layer</div>
+            <div class="scene-title">${this._escapeHtml((cfg.title || "Visual Layer"))}</div>
             <div class="actions">
               <label class="theme-switch" title="Dark Mode">
                 <input type="checkbox" data-action="toggle-theme" ${themeDark ? "checked" : ""}>

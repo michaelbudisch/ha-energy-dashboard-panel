@@ -55,6 +55,7 @@ from .const import (
     CONF_PRICE_SENSORS,
     CONF_SENSORS,
     CONF_SOLAR_POWER,
+    CONF_TIBBER_API_KEY,
     CONF_TIBBER_HOME_ID,
     CONF_TIBBER_API_TOKEN,
     CONF_USE_SIGNED_BATTERY_POWER,
@@ -300,6 +301,15 @@ def _select_tibber_home(homes: Any, home_id: str | None) -> dict[str, Any] | Non
     return None
 
 
+def _tibber_credentials(conf: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Read Tibber token/home from runtime config."""
+    token_raw = conf.get(CONF_TIBBER_API_TOKEN) or conf.get(CONF_TIBBER_API_KEY)
+    token = token_raw.strip() if isinstance(token_raw, str) and token_raw.strip() else None
+    home_raw = conf.get(CONF_TIBBER_HOME_ID)
+    home_id = home_raw.strip() if isinstance(home_raw, str) and home_raw.strip() else None
+    return token, home_id
+
+
 def _open_meteo_condition(
     weather_code_raw: Any,
     is_day_raw: Any,
@@ -487,10 +497,9 @@ class _TibberApiPriceSensor(SensorEntity):
     _attr_device_class = getattr(SensorDeviceClass, "MONETARY", None)
     _attr_state_class = getattr(SensorStateClass, "MEASUREMENT", None)
 
-    def __init__(self, hass: HomeAssistant, token: str, home_id: str | None) -> None:
+    def __init__(self, hass: HomeAssistant, conf: dict[str, Any]) -> None:
         self._hass = hass
-        self._token = token
-        self._home_id = home_id.strip() if isinstance(home_id, str) and home_id.strip() else None
+        self._conf = conf
         self._attrs: dict[str, Any] = {}
         self._attr_native_value = None
         self._attr_available = False
@@ -511,6 +520,16 @@ class _TibberApiPriceSensor(SensorEntity):
 
     async def async_update(self) -> None:
         """Fetch latest Tibber price data via GraphQL."""
+        token, home_id = _tibber_credentials(self._conf)
+        if token is None:
+            self._attr_available = False
+            self._attrs = {
+                "source": "tibber_api",
+                "status": "missing_token",
+                "last_sync": dt_util.utcnow().isoformat(),
+            }
+            return
+
         query = """
 query EnergyDashboardPrices {
   viewer {
@@ -548,7 +567,7 @@ query EnergyDashboardPrices {
 """.strip()
 
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
         payload = {"query": query}
@@ -573,7 +592,7 @@ query EnergyDashboardPrices {
             return
 
         homes = (((data.get("data") or {}).get("viewer") or {}).get("homes")) or []
-        selected_home = _select_tibber_home(homes, self._home_id)
+        selected_home = _select_tibber_home(homes, home_id)
         if not isinstance(selected_home, dict):
             self._attr_available = False
             return
@@ -641,10 +660,9 @@ class _TibberApiLiveGridSensor(SensorEntity):
     _attr_state_class = getattr(SensorStateClass, "MEASUREMENT", None)
     _attr_device_class = getattr(SensorDeviceClass, "POWER", None)
 
-    def __init__(self, hass: HomeAssistant, token: str, home_id: str | None) -> None:
+    def __init__(self, hass: HomeAssistant, conf: dict[str, Any]) -> None:
         self._hass = hass
-        self._token = token
-        self._home_id = home_id.strip() if isinstance(home_id, str) and home_id.strip() else None
+        self._conf = conf
         self._attrs: dict[str, Any] = {}
         self._attr_native_value = None
         self._attr_available = False
@@ -695,6 +713,16 @@ class _TibberApiLiveGridSensor(SensorEntity):
 
     async def _async_fetch(self) -> None:
         """Fetch latest Tibber live measurement and derive signed grid power."""
+        token, home_id = _tibber_credentials(self._conf)
+        if token is None:
+            self._attr_available = False
+            self._attrs = {
+                "source": "tibber_api_live",
+                "status": "missing_token",
+                "last_sync": dt_util.utcnow().isoformat(),
+            }
+            return
+
         query = """
 query EnergyDashboardLiveGrid {
   viewer {
@@ -718,7 +746,7 @@ query EnergyDashboardLiveGrid {
 """.strip()
 
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
         payload = {"query": query}
@@ -743,7 +771,7 @@ query EnergyDashboardLiveGrid {
             return
 
         homes = (((data.get("data") or {}).get("viewer") or {}).get("homes")) or []
-        selected_home = _select_tibber_home(homes, self._home_id)
+        selected_home = _select_tibber_home(homes, home_id)
         if not isinstance(selected_home, dict):
             self._attr_available = False
             return
@@ -1611,25 +1639,18 @@ async def async_setup_platform(
 
     entities = [_LifetimeMetricSensor(accumulator, metric) for metric in _METRICS]
     entities.extend(_AccumulatorDiagnosticSensor(accumulator, metric) for metric in _DIAG_METRICS)
-    tibber_token = conf.get(CONF_TIBBER_API_TOKEN)
-    if isinstance(tibber_token, str) and tibber_token.strip():
-        tibber_home_id = conf.get(CONF_TIBBER_HOME_ID)
-        token = tibber_token.strip()
-        home_id = tibber_home_id if isinstance(tibber_home_id, str) else None
-        entities.append(
-            _TibberApiPriceSensor(
-                hass=hass,
-                token=token,
-                home_id=home_id,
-            )
+    entities.append(
+        _TibberApiPriceSensor(
+            hass=hass,
+            conf=conf,
         )
-        entities.append(
-            _TibberApiLiveGridSensor(
-                hass=hass,
-                token=token,
-                home_id=home_id,
-            )
+    )
+    entities.append(
+        _TibberApiLiveGridSensor(
+            hass=hass,
+            conf=conf,
         )
+    )
     weather_location = conf.get(CONF_WEATHER_LOCATION)
     if isinstance(weather_location, str) and weather_location.strip():
         entities.append(
