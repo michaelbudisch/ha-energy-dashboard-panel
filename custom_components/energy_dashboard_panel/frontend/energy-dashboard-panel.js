@@ -47,6 +47,8 @@ const DIAG_SENSORS = {
 };
 const EDP_DOMAIN = "energy_dashboard_panel";
 const EDP_SERVICE_SET_TIBBER = "set_tibber_credentials";
+const EDP_SERVICE_SET_UI_CONFIG = "set_ui_config";
+const EDP_API_UI_CONFIG = `${EDP_DOMAIN}/ui_config`;
 const TIBBER_PRICE_SENSOR = "sensor.energy_dashboard_panel_tibber_price";
 const TIBBER_LIVE_GRID_SENSOR = "sensor.energy_dashboard_panel_tibber_grid_power";
 
@@ -144,6 +146,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._savingsHoverIndex = null;
     this._uiConfig = {};
     this._uiConfigLoaded = false;
+    this._uiConfigBackendSyncStarted = false;
+    this._uiConfigBackendSyncPromise = null;
     this._settingsOpen = false;
     this._settingsDraft = null;
     this._settingsError = "";
@@ -275,6 +279,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._themeLoaded = false;
     this._trendChartModeLoaded = false;
     this._uiConfigLoaded = false;
+    this._uiConfigBackendSyncStarted = false;
+    this._uiConfigBackendSyncPromise = null;
+    this._uiConfig = {};
     this._settingsOpen = false;
     this._settingsDraft = null;
     this._settingsError = "";
@@ -301,8 +308,64 @@ class HaEnergyDashboardPanel extends HTMLElement {
       this._lastRenderAt = Date.now();
       const fullRender = this._pendingFullRender;
       this._pendingFullRender = false;
-      this._render(fullRender);
+      try {
+        this._render(fullRender);
+      } catch (error) {
+        this._renderFatalError(error);
+      }
     });
+  }
+
+  _renderFatalError(error) {
+    if (!this.shadowRoot) {
+      return;
+    }
+    const message =
+      error && typeof error === "object" && "message" in error
+        ? String(error.message || "")
+        : String(error || "");
+    const stack =
+      error && typeof error === "object" && "stack" in error
+        ? String(error.stack || "")
+        : "";
+    const detail = stack || message || "Unbekannter Fehler";
+    this._hasRenderedTemplate = false;
+    this.shadowRoot.innerHTML = `
+      <style>
+        .fatal {
+          margin: 14px;
+          border-radius: 12px;
+          border: 1px solid rgba(203, 81, 81, 0.42);
+          background: rgba(232, 87, 87, 0.12);
+          color: #9b1b1b;
+          padding: 12px;
+          font: 600 13px/1.4 "Sora", "Segoe UI", sans-serif;
+          white-space: pre-wrap;
+          word-break: break-word;
+        }
+        .fatal .t {
+          font-size: 14px;
+          margin-bottom: 8px;
+        }
+        .fatal .h {
+          color: #6b0f0f;
+          margin-bottom: 6px;
+          font-weight: 700;
+        }
+      </style>
+      <div class="fatal">
+        <div class="t">Frontend-Fehler im Energy Dashboard Panel</div>
+        <div class="h">Bitte Screenshot dieser Meldung senden:</div>
+        ${this._escapeHtml(detail)}
+      </div>
+    `;
+    try {
+      // Keep a useful console trace for desktop/mobile web inspector.
+      // eslint-disable-next-line no-console
+      console.error("[energy_dashboard_panel] fatal render error", error);
+    } catch (_ignore) {
+      // no-op
+    }
   }
 
   _requestRender({ immediate = false, full = false } = {}) {
@@ -594,18 +657,60 @@ class HaEnergyDashboardPanel extends HTMLElement {
   }
 
   _ensureUiConfig() {
-    if (this._uiConfigLoaded) {
+    if (!this._uiConfigLoaded) {
+      let parsed = {};
+      try {
+        const raw = window.localStorage.getItem(this._uiConfigStorageKey());
+        parsed = raw ? JSON.parse(raw) : {};
+      } catch (error) {
+        parsed = {};
+      }
+      this._uiConfig = this._normalizeUiConfig(parsed);
+      this._uiConfigLoaded = true;
+    }
+
+    if (!this._uiConfigBackendSyncStarted) {
+      this._uiConfigBackendSyncStarted = true;
+      void this._syncUiConfigFromBackend();
+    }
+  }
+
+  async _syncUiConfigFromBackend(force = false) {
+    if (!this._hass?.callApi) {
       return;
     }
-    let parsed = {};
-    try {
-      const raw = window.localStorage.getItem(this._uiConfigStorageKey());
-      parsed = raw ? JSON.parse(raw) : {};
-    } catch (error) {
-      parsed = {};
+    if (!force && this._uiConfigBackendSyncPromise) {
+      return this._uiConfigBackendSyncPromise;
     }
-    this._uiConfig = this._normalizeUiConfig(parsed);
-    this._uiConfigLoaded = true;
+
+    const run = async () => {
+      try {
+        const raw = await this._hass.callApi("GET", EDP_API_UI_CONFIG);
+        const backendCfg = this._normalizeUiConfig(
+          this._isObject(raw) && this._isObject(raw.config) ? raw.config : raw
+        );
+        const prev = JSON.stringify(this._uiConfig || {});
+        const next = JSON.stringify(backendCfg || {});
+        if (prev !== next) {
+          this._uiConfig = backendCfg;
+          this._saveUiConfig();
+          this._positions = null;
+          this._trendHoverIndex = null;
+          this._savingsHoverIndex = null;
+          this._trendKey = null;
+          this._trendData = null;
+          this._trendCache.clear();
+          this._lastHassSignature = "";
+          this._requestRender({ immediate: true, full: true });
+        }
+      } catch (error) {
+        // Ignore backend sync errors and keep local fallback.
+      } finally {
+        this._uiConfigBackendSyncPromise = null;
+      }
+    };
+    this._uiConfigBackendSyncPromise = run();
+    return this._uiConfigBackendSyncPromise;
   }
 
   _saveUiConfig() {
@@ -907,6 +1012,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
   }
 
+  async _saveUiConfigBackend(config, reset = false) {
+    if (!this._hass?.callService) {
+      return;
+    }
+    const payload = reset ? { reset: true } : { config: config || {} };
+    await this._hass.callService(EDP_DOMAIN, EDP_SERVICE_SET_UI_CONFIG, payload);
+  }
+
   async _saveSettingsFromForm() {
     const form = this.shadowRoot?.querySelector("#settings-form");
     if (!form) {
@@ -925,6 +1038,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
       this._requestRender({ immediate: true, full: true });
       return;
     }
+    try {
+      await this._saveUiConfigBackend(result.value, false);
+    } catch (error) {
+      this._settingsError = `Dashboard Einstellungen konnten nicht gespeichert werden: ${error?.message || error}`;
+      this._requestRender({ immediate: true, full: true });
+      return;
+    }
     this._uiConfig = result.value || {};
     this._saveUiConfig();
     this._settingsError = "";
@@ -940,7 +1060,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._requestRender({ immediate: true, full: true });
   }
 
-  _resetSettingsToYamlFallback() {
+  async _resetSettingsToYamlFallback() {
+    try {
+      await this._saveUiConfigBackend({}, true);
+    } catch (error) {
+      this._settingsError = `Zurücksetzen auf YAML fehlgeschlagen: ${error?.message || error}`;
+      this._requestRender({ immediate: true, full: true });
+      return;
+    }
     this._clearUiConfig();
     this._settingsOpen = false;
     this._settingsDraft = null;
@@ -1643,14 +1770,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return {
         label: "--",
         detail: "SOC fehlt",
-        targetSoc: Math.round(targetSoc),
       };
     }
     if (capacityKwh === null || capacityKwh <= 0) {
       return {
         label: "--",
         detail: "Akku-Kapazität fehlt",
-        targetSoc: Math.round(targetSoc),
       };
     }
 
@@ -3152,7 +3277,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
         : (savedSolarFinal ?? 0) + (batteryArbitrageFinal ?? 0);
 
     const stepValues = points
-      .flatMap((p) => [p.saveSolarEur, p.saveArbitrageEur, p.saveSmartEur])
+      .reduce((acc, p) => {
+        acc.push(p.saveSolarEur, p.saveArbitrageEur, p.saveSmartEur);
+        return acc;
+      }, [])
       .filter((v) => v !== null && v !== undefined);
     const cumValues = points
       .map((p) => p.saveSmartCumEur)
@@ -4329,7 +4457,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const condition =
       conditionAttr ||
       WEATHER_CONDITION_LABEL[conditionRaw] ||
-      (conditionRaw ? conditionRaw.replaceAll("_", " ") : "Unbekannt");
+      (conditionRaw ? conditionRaw.replace(/_/g, " ") : "Unbekannt");
     const tempAttr =
       weather.attributes?.temperature ??
       weather.attributes?.current_temperature ??
@@ -4860,8 +4988,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         this._flowResizeObserver = null;
       }
       this._flowCanvas = canvas;
-      this._flowCtx =
-        canvas.getContext("2d", { alpha: true, desynchronized: true }) || canvas.getContext("2d");
+      this._flowCtx = canvas.getContext("2d");
       if (!this._flowCtx) {
         this._flowModel = [];
         return;
@@ -5102,7 +5229,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       void this._saveSettingsFromForm();
     });
     resetSettingsBtn?.addEventListener("click", () => {
-      this._resetSettingsToYamlFallback();
+      void this._resetSettingsToYamlFallback();
     });
     reportOverlay?.addEventListener("click", (ev) => {
       if (ev.target === reportOverlay) {
@@ -7009,8 +7136,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._bindChartResizeObserver();
     this._bindChartHoverHandlers();
     requestAnimationFrame(() => {
-      this._drawTrendChart();
-      this._drawSavingsChart();
+      try {
+        this._drawTrendChart();
+        this._drawSavingsChart();
+      } catch (error) {
+        this._renderFatalError(error);
+      }
     });
   }
 }

@@ -12,14 +12,20 @@ SIDEBAR_ICON_DEFAULT = "mdi:solar-power-variant"
 STORAGE_VERSION = 1
 STORAGE_KEY_LIFETIME = f"{DOMAIN}_lifetime"
 STORAGE_KEY_RUNTIME_SETTINGS = f"{DOMAIN}_runtime_settings"
+STORAGE_KEY_UI_SETTINGS = f"{DOMAIN}_ui_settings"
 
 DATA_CONFIG = "config"
+DATA_BASE_CONFIG = "base_config"
+DATA_PANEL_CONFIG = "panel_config"
 DATA_LIFETIME_ACCUMULATOR = "lifetime_accumulator"
 DATA_LIFETIME_PLATFORM_LOADED = "lifetime_platform_loaded"
 DATA_RUNTIME_SETTINGS_STORE = "runtime_settings_store"
+DATA_UI_SETTINGS = "ui_settings"
+DATA_UI_SETTINGS_STORE = "ui_settings_store"
 
 SERVICE_RESET_LIFETIME_SAVINGS = "reset_lifetime_savings"
 SERVICE_SET_TIBBER_CREDENTIALS = "set_tibber_credentials"
+SERVICE_SET_UI_CONFIG = "set_ui_config"
 
 ENTITY_LIFETIME_SMART_SAVINGS_EUR = f"sensor.{DOMAIN}_lifetime_smart_savings_eur"
 ENTITY_LIFETIME_SOLAR_DIRECT_EUR = f"sensor.{DOMAIN}_lifetime_solar_direct_savings_eur"
