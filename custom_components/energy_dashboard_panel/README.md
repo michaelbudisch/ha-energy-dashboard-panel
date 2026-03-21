@@ -46,6 +46,7 @@ energy_dashboard_panel:
   # Akku-Restlaufzeit (Prognose)
   battery_capacity_kwh: 10.2
   battery_reserve_soc: 10
+  battery_max_charge_soc: 90
 
   # Sensor-Modi: auto | signed | dual
   grid_sensor_mode: auto
@@ -100,7 +101,8 @@ Hinweis load_power:
 
 Hinweis Akku-Prognose:
 
-- Restlaufzeit nutzt `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktuelle Entladeleistung.
+- Restlaufzeit (Entladen) nutzt `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktuelle Entladeleistung.
+- Ladezeit bis Ziel nutzt `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktuelle Ladeleistung.
 - Ohne `battery_capacity_kwh` wird versucht, die Kapazität aus `battery_soc`-Attributen zu lesen.
 
 ## Erzeugte Sensoren (Auszug)

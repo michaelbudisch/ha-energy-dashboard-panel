@@ -56,6 +56,7 @@ energy_dashboard_panel:
   # Akku-Restlaufzeit (Prognose im Dashboard)
   battery_capacity_kwh: 10.2
   battery_reserve_soc: 10
+  battery_max_charge_soc: 90
 
   # Tibber API (ohne Tibber Integration)
   # Bevorzugt: tibber_api_token (Alias: tibber_api_key)
@@ -106,7 +107,8 @@ Hinweis load_power:
 
 Hinweis Akku-Prognose:
 
-- Restlaufzeit wird berechnet aus `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktueller Entladeleistung.
+- Restlaufzeit (Entladen) wird berechnet aus `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktueller Entladeleistung.
+- Ladezeit bis Ziel wird aus `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktueller Ladeleistung berechnet.
 - Falls `battery_capacity_kwh` fehlt, versucht das Panel die Kapazität aus Attributen von `battery_soc` zu lesen.
 
 ## GitHub: Repo erstellen und pushen
