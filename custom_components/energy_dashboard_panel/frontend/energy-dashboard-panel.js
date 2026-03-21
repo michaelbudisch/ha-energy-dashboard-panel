@@ -147,6 +147,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._settingsOpen = false;
     this._settingsDraft = null;
     this._settingsError = "";
+    this._reportOpen = false;
+    this._reportLoading = false;
+    this._reportError = "";
+    this._reportPeriod = "month";
+    this._reportData = null;
     this._gridStatusState = "idle";
     this._renderFrame = 0;
     this._renderTimeout = 0;
@@ -273,6 +278,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._settingsOpen = false;
     this._settingsDraft = null;
     this._settingsError = "";
+    this._reportOpen = false;
+    this._reportLoading = false;
+    this._reportError = "";
+    this._reportPeriod = "month";
+    this._reportData = null;
     this._hasRenderedTemplate = false;
     this._requestRender({ immediate: true, full: true });
   }
@@ -778,6 +788,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
   }
 
   _openSettingsEditor() {
+    this._reportOpen = false;
     this._settingsDraft = this._settingsDraftFromConfig(this._panelConfig());
     this._settingsError = "";
     this._settingsOpen = true;
@@ -2096,6 +2107,49 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return `${dd}.${mm}.${yyyy}`;
   }
 
+  _formatDateTime(ts) {
+    const d = new Date(ts);
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = String(d.getFullYear());
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return `${dd}.${mm}.${yyyy} ${hh}:${mi}`;
+  }
+
+  _reportWindow(period = "month") {
+    const now = Date.now();
+    const today = new Date();
+    if (period === "year") {
+      const startMs = new Date(today.getFullYear(), 0, 1, 0, 0, 0, 0).getTime();
+      const days = Math.max(1, (now - startMs) / (24 * 60 * 60 * 1000));
+      let stepMs = 60 * 60 * 1000;
+      if (days > 120) {
+        stepMs = 2 * 60 * 60 * 1000;
+      }
+      if (days > 240) {
+        stepMs = 4 * 60 * 60 * 1000;
+      }
+      return {
+        key: "report_year",
+        label: `Jahr ${today.getFullYear()}`,
+        startMs,
+        endMs: now,
+        stepMs,
+      };
+    }
+
+    const startMs = new Date(today.getFullYear(), today.getMonth(), 1, 0, 0, 0, 0).getTime();
+    const days = Math.max(1, (now - startMs) / (24 * 60 * 60 * 1000));
+    return {
+      key: "report_month",
+      label: `Monat ${String(today.getMonth() + 1).padStart(2, "0")}.${today.getFullYear()}`,
+      startMs,
+      endMs: now,
+      stepMs: days > 16 ? 60 * 60 * 1000 : 30 * 60 * 1000,
+    };
+  }
+
   _setTrendRange(rangeKey) {
     if (!TREND_RANGES[rangeKey] || this._trendRange === rangeKey) {
       return;
@@ -3234,6 +3288,450 @@ class HaEnergyDashboardPanel extends HTMLElement {
       }
     }
     return history;
+  }
+
+  _trendEntitiesForFetch(sensors, priceCfg = null, flowOpts = this._flowOptions()) {
+    const entities = [sensors.load_power];
+    if (sensors.solar_power) {
+      entities.push(sensors.solar_power);
+    }
+    if (sensors.grid_import_power) {
+      entities.push(sensors.grid_import_power);
+    }
+    if (sensors.grid_export_power) {
+      entities.push(sensors.grid_export_power);
+    }
+    if (sensors.grid_power) {
+      entities.push(sensors.grid_power);
+    }
+    if (this._stateObj(TIBBER_LIVE_GRID_SENSOR) || !sensors.grid_power) {
+      entities.push(TIBBER_LIVE_GRID_SENSOR);
+    }
+    if (!flowOpts.useSignedBatteryPower && sensors.battery_charge_power) {
+      entities.push(sensors.battery_charge_power);
+    }
+    if (!flowOpts.useSignedBatteryPower && sensors.battery_discharge_power) {
+      entities.push(sensors.battery_discharge_power);
+    }
+    if (sensors.battery_power) {
+      entities.push(sensors.battery_power);
+    }
+    if (priceCfg?.entityId) {
+      entities.push(priceCfg.entityId);
+    }
+    return [...new Set(entities.filter(Boolean))];
+  }
+
+  async _fetchTrendDataForWindow(
+    sensors,
+    windowCfg,
+    priceCfg = null,
+    signedGridEntityId = null,
+    force = false
+  ) {
+    if (!this._hass?.callApi) {
+      throw new Error("History API nicht verfügbar");
+    }
+
+    const key = this._buildTrendKey(sensors, windowCfg, priceCfg, signedGridEntityId);
+    const now = Date.now();
+    if (!force) {
+      const cached = this._trendCache.get(key);
+      if (cached?.data && now - (cached.ts || 0) < 20 * 60 * 1000) {
+        return cached.data;
+      }
+    }
+
+    const uniqEntities = this._trendEntitiesForFetch(
+      sensors,
+      priceCfg,
+      this._flowOptions()
+    );
+    if (uniqEntities.length === 0) {
+      throw new Error("Keine Verlauf-Entitäten verfügbar");
+    }
+
+    try {
+      const history = await this._fetchHistoryWindow(uniqEntities, windowCfg);
+      const series = this._historyToSeries(history);
+      const trend = this._buildTrendData(
+        series,
+        sensors,
+        windowCfg,
+        priceCfg,
+        signedGridEntityId
+      );
+      this._setTrendCache(key, trend, Date.now());
+      return trend;
+    } catch (error) {
+      if (this._isLongTrendRange(windowCfg)) {
+        const path = this._historyPath({
+          startMs: windowCfg.startMs,
+          endMs: windowCfg.endMs,
+          entities: uniqEntities,
+          significantChangesOnly: false,
+        });
+        const history = await this._hass.callApi("GET", path);
+        const series = this._historyToSeries(history);
+        const trend = this._buildTrendData(
+          series,
+          sensors,
+          windowCfg,
+          priceCfg,
+          signedGridEntityId
+        );
+        this._setTrendCache(key, trend, Date.now());
+        return trend;
+      }
+      throw error;
+    }
+  }
+
+  _buildReportFromTrendData(trendData, windowCfg, period) {
+    const points = Array.isArray(trendData?.points) ? trendData.points : [];
+    const stepHours = (windowCfg?.stepMs || 0) / (60 * 60 * 1000);
+    let loadKwh = 0;
+    let gridKwh = 0;
+    let solarKwh = 0;
+    let batteryKwh = 0;
+    let nonNullPoints = 0;
+    const rows = [];
+
+    points.forEach((point) => {
+      const loadW = point?.load;
+      const gridW = point?.gridCover;
+      const solarW = point?.solarCover;
+      const batteryW = point?.batteryCover;
+      if (loadW !== null && loadW !== undefined) {
+        loadKwh += (Math.max(0, Number(loadW) || 0) * stepHours) / 1000;
+        nonNullPoints += 1;
+      }
+      if (gridW !== null && gridW !== undefined) {
+        gridKwh += (Math.max(0, Number(gridW) || 0) * stepHours) / 1000;
+      }
+      if (solarW !== null && solarW !== undefined) {
+        solarKwh += (Math.max(0, Number(solarW) || 0) * stepHours) / 1000;
+      }
+      if (batteryW !== null && batteryW !== undefined) {
+        batteryKwh += (Math.max(0, Number(batteryW) || 0) * stepHours) / 1000;
+      }
+
+      rows.push({
+        t: point?.t || null,
+        loadW: loadW === null || loadW === undefined ? null : Math.max(0, Number(loadW) || 0),
+        gridW: gridW === null || gridW === undefined ? null : Math.max(0, Number(gridW) || 0),
+        solarW: solarW === null || solarW === undefined ? null : Math.max(0, Number(solarW) || 0),
+        batteryW:
+          batteryW === null || batteryW === undefined ? null : Math.max(0, Number(batteryW) || 0),
+        autarkyPct:
+          point?.autarky === null || point?.autarky === undefined
+            ? null
+            : this._clamp(Number(point.autarky) || 0, 0, 100),
+      });
+    });
+
+    const localKwh = Math.max(0, loadKwh - gridKwh);
+    const autarkyPct = loadKwh > 0 ? this._clamp((1 - gridKwh / loadKwh) * 100, 0, 100) : null;
+    const pvUsagePct = loadKwh > 0 ? this._clamp((solarKwh / loadKwh) * 100, 0, 100) : null;
+    const batterySharePct = loadKwh > 0 ? this._clamp((batteryKwh / loadKwh) * 100, 0, 100) : null;
+
+    return {
+      period,
+      label: windowCfg?.label || (period === "year" ? "Jahr" : "Monat"),
+      startMs: windowCfg?.startMs || null,
+      endMs: windowCfg?.endMs || null,
+      generatedAt: Date.now(),
+      sourcePoints: nonNullPoints,
+      totals: {
+        loadKwh,
+        gridKwh,
+        localKwh,
+        solarKwh,
+        batteryKwh,
+        autarkyPct,
+        pvUsagePct,
+        batterySharePct,
+      },
+      savings: {
+        smartEur: trendData?.smartSavingsEur ?? null,
+        solarDirectEur: trendData?.savedSolarDirectEur ?? null,
+        nonGridEur: trendData?.savedNonGridEur ?? null,
+        batteryArbitrageEur: trendData?.batteryArbitrageEur ?? null,
+      },
+      rows,
+    };
+  }
+
+  async _loadReportData(period = this._reportPeriod, force = false) {
+    if (this._reportLoading) {
+      return;
+    }
+    this._reportLoading = true;
+    this._reportError = "";
+    this._requestRender({ immediate: true, full: true });
+
+    try {
+      const sensors = this._sensors();
+      const priceCfg = this._trendPriceConfig();
+      const signedGridSource = this._resolveGridSignedSource(sensors);
+      const windowCfg = this._reportWindow(period);
+      const trendData = await this._fetchTrendDataForWindow(
+        sensors,
+        windowCfg,
+        priceCfg,
+        signedGridSource.entityId,
+        force
+      );
+      this._reportData = this._buildReportFromTrendData(trendData, windowCfg, period);
+    } catch (error) {
+      this._reportData = null;
+      this._reportError = `Bericht konnte nicht erstellt werden: ${error?.message || error}`;
+    } finally {
+      this._reportLoading = false;
+      this._requestRender({ immediate: true, full: true });
+    }
+  }
+
+  _openReportDialog() {
+    this._settingsOpen = false;
+    this._reportOpen = true;
+    this._reportError = "";
+    if (!this._reportData || this._reportData.period !== this._reportPeriod) {
+      void this._loadReportData(this._reportPeriod, false);
+    }
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _closeReportDialog() {
+    this._reportOpen = false;
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _setReportPeriod(period) {
+    const next = period === "year" ? "year" : "month";
+    if (this._reportPeriod === next) {
+      return;
+    }
+    this._reportPeriod = next;
+    this._reportData = null;
+    void this._loadReportData(next, false);
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _downloadTextFile(filename, content, mimeType = "text/plain;charset=utf-8") {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.setTimeout(() => URL.revokeObjectURL(url), 500);
+  }
+
+  _csvValue(raw) {
+    if (raw === null || raw === undefined) {
+      return "";
+    }
+    const txt = String(raw);
+    if (txt.includes(";") || txt.includes("\n") || txt.includes('"')) {
+      return `"${txt.replace(/"/g, '""')}"`;
+    }
+    return txt;
+  }
+
+  _reportFilenameBase(report) {
+    const suffix = report?.period === "year" ? "jahr" : "monat";
+    const stamp = this._formatDateTime(report?.generatedAt || Date.now())
+      .replace(/[.: ]/g, "-")
+      .replace(/-+/g, "-");
+    return `energie_report_${suffix}_${stamp}`;
+  }
+
+  _exportReportCsv() {
+    const report = this._reportData;
+    if (!report) {
+      return;
+    }
+    const totals = report.totals || {};
+    const savings = report.savings || {};
+    const lines = [];
+    lines.push("Metrik;Wert");
+    lines.push(`Zeitraum;${this._csvValue(report.label || "-")}`);
+    lines.push(`Von;${this._csvValue(report.startMs ? this._formatDateTime(report.startMs) : "-")}`);
+    lines.push(`Bis;${this._csvValue(report.endMs ? this._formatDateTime(report.endMs) : "-")}`);
+    lines.push(`Erstellt;${this._csvValue(this._formatDateTime(report.generatedAt || Date.now()))}`);
+    lines.push(`Gesamtlast_kWh;${this._csvValue((totals.loadKwh ?? 0).toFixed(3))}`);
+    lines.push(`Netzbezug_kWh;${this._csvValue((totals.gridKwh ?? 0).toFixed(3))}`);
+    lines.push(`Lokale_Versorgung_kWh;${this._csvValue((totals.localKwh ?? 0).toFixed(3))}`);
+    lines.push(`PV_Nutzung_kWh;${this._csvValue((totals.solarKwh ?? 0).toFixed(3))}`);
+    lines.push(`Batterie_Nutzung_kWh;${this._csvValue((totals.batteryKwh ?? 0).toFixed(3))}`);
+    lines.push(`Autarkie_pct;${this._csvValue(totals.autarkyPct === null ? "" : totals.autarkyPct.toFixed(2))}`);
+    lines.push(`PV_Anteil_pct;${this._csvValue(totals.pvUsagePct === null ? "" : totals.pvUsagePct.toFixed(2))}`);
+    lines.push(
+      `Batterie_Anteil_pct;${this._csvValue(
+        totals.batterySharePct === null ? "" : totals.batterySharePct.toFixed(2)
+      )}`
+    );
+    lines.push(`Ersparnis_Smart_EUR;${this._csvValue(savings.smartEur === null ? "" : Number(savings.smartEur).toFixed(2))}`);
+    lines.push(
+      `Ersparnis_Solar_Direkt_EUR;${this._csvValue(
+        savings.solarDirectEur === null ? "" : Number(savings.solarDirectEur).toFixed(2)
+      )}`
+    );
+    lines.push(
+      `Wert_Nichtbezug_EUR;${this._csvValue(
+        savings.nonGridEur === null ? "" : Number(savings.nonGridEur).toFixed(2)
+      )}`
+    );
+    lines.push(
+      `Akku_Preisvorteil_EUR;${this._csvValue(
+        savings.batteryArbitrageEur === null ? "" : Number(savings.batteryArbitrageEur).toFixed(2)
+      )}`
+    );
+    lines.push("");
+    lines.push("Zeit;Gesamtlast_W;Netz_W;Solar_W;Batterie_W;Autarkie_pct");
+
+    (report.rows || []).forEach((row) => {
+      lines.push(
+        [
+          this._csvValue(row.t ? this._formatDateTime(row.t) : ""),
+          this._csvValue(row.loadW === null ? "" : Number(row.loadW).toFixed(1)),
+          this._csvValue(row.gridW === null ? "" : Number(row.gridW).toFixed(1)),
+          this._csvValue(row.solarW === null ? "" : Number(row.solarW).toFixed(1)),
+          this._csvValue(row.batteryW === null ? "" : Number(row.batteryW).toFixed(1)),
+          this._csvValue(row.autarkyPct === null ? "" : Number(row.autarkyPct).toFixed(2)),
+        ].join(";")
+      );
+    });
+
+    const filename = `${this._reportFilenameBase(report)}.csv`;
+    this._downloadTextFile(filename, lines.join("\n"), "text/csv;charset=utf-8");
+  }
+
+  _exportReportPdf() {
+    const report = this._reportData;
+    if (!report) {
+      return;
+    }
+    const totals = report.totals || {};
+    const savings = report.savings || {};
+    const html = `
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Energie Report</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 22px; color: #1d2a36; }
+    h1 { margin: 0 0 10px; font-size: 22px; }
+    .meta { margin-bottom: 14px; color: #45596d; font-size: 13px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 14px; }
+    th, td { border: 1px solid #d2dbe4; padding: 8px 10px; text-align: left; font-size: 13px; }
+    th { background: #eef3f8; }
+    .foot { margin-top: 8px; color: #5a6f84; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Energie Report (${this._escapeHtml(report.period === "year" ? "Jahr" : "Monat")})</h1>
+  <div class="meta">
+    Zeitraum: ${this._escapeHtml(report.label || "-")}<br>
+    Von: ${this._escapeHtml(report.startMs ? this._formatDateTime(report.startMs) : "-")}<br>
+    Bis: ${this._escapeHtml(report.endMs ? this._formatDateTime(report.endMs) : "-")}<br>
+    Erstellt: ${this._escapeHtml(this._formatDateTime(report.generatedAt || Date.now()))}
+  </div>
+  <table>
+    <thead><tr><th>Metrik</th><th>Wert</th></tr></thead>
+    <tbody>
+      <tr><td>Gesamtlast</td><td>${this._escapeHtml(this._formatEnergyKwh(totals.loadKwh))}</td></tr>
+      <tr><td>Netzbezug</td><td>${this._escapeHtml(this._formatEnergyKwh(totals.gridKwh))}</td></tr>
+      <tr><td>Lokale Versorgung</td><td>${this._escapeHtml(this._formatEnergyKwh(totals.localKwh))}</td></tr>
+      <tr><td>PV-Nutzung</td><td>${this._escapeHtml(this._formatEnergyKwh(totals.solarKwh))}</td></tr>
+      <tr><td>Batterie-Nutzung</td><td>${this._escapeHtml(this._formatEnergyKwh(totals.batteryKwh))}</td></tr>
+      <tr><td>Autarkie</td><td>${this._escapeHtml(this._formatPercent(totals.autarkyPct))}</td></tr>
+      <tr><td>PV-Anteil</td><td>${this._escapeHtml(this._formatPercent(totals.pvUsagePct))}</td></tr>
+      <tr><td>Batterie-Anteil</td><td>${this._escapeHtml(this._formatPercent(totals.batterySharePct))}</td></tr>
+      <tr><td>Smart-Ersparnis</td><td>${this._escapeHtml(this._formatMoneyWithCent(savings.smartEur))}</td></tr>
+      <tr><td>Solar direkt</td><td>${this._escapeHtml(this._formatMoneyWithCent(savings.solarDirectEur))}</td></tr>
+      <tr><td>Wert Nichtbezug</td><td>${this._escapeHtml(this._formatMoneyWithCent(savings.nonGridEur))}</td></tr>
+      <tr><td>Akku Preisvorteil</td><td>${this._escapeHtml(this._formatMoneyWithCent(savings.batteryArbitrageEur))}</td></tr>
+    </tbody>
+  </table>
+  <div class="foot">Hinweis: PDF enthält die Zusammenfassung. Detaillierte Zeitreihe steht im CSV-Export.</div>
+</body>
+</html>`;
+
+    const popup = window.open("", "_blank", "noopener,noreferrer,width=960,height=840");
+    if (!popup) {
+      this._reportError = "PDF konnte nicht geöffnet werden (Popup blockiert).";
+      this._requestRender({ immediate: true, full: true });
+      return;
+    }
+    popup.document.open();
+    popup.document.write(html);
+    popup.document.close();
+    window.setTimeout(() => {
+      popup.focus();
+      popup.print();
+    }, 300);
+  }
+
+  _reportModalHTML() {
+    const report = this._reportData;
+    const isMonth = this._reportPeriod === "month";
+    const isYear = this._reportPeriod === "year";
+    const totals = report?.totals || {};
+    const savings = report?.savings || {};
+    return `
+      <div class="report-overlay" data-action="close-report-overlay">
+        <section class="report-dialog" role="dialog" aria-modal="true" aria-label="Berichte">
+          <header class="settings-head">
+            <div class="settings-title">Berichte (Monat/Jahr)</div>
+            <button class="btn ghost" data-action="close-report">Schließen</button>
+          </header>
+          <div class="report-controls">
+            <div class="trend-controls">
+              <button class="range-btn ${isMonth ? "active" : ""}" data-action="report-period" data-period="month">Monat</button>
+              <button class="range-btn ${isYear ? "active" : ""}" data-action="report-period" data-period="year">Jahr</button>
+            </div>
+            <button class="btn ghost" data-action="report-refresh">Neu laden</button>
+            <button class="btn ghost" data-action="report-export-csv" ${report && !this._reportLoading ? "" : "disabled"}>CSV</button>
+            <button class="btn primary" data-action="report-export-pdf" ${report && !this._reportLoading ? "" : "disabled"}>PDF</button>
+          </div>
+          ${
+            this._reportError
+              ? `<div class="settings-error">${this._escapeHtml(this._reportError)}</div>`
+              : ""
+          }
+          ${
+            this._reportLoading
+              ? `<div class="report-loading">Bericht wird erstellt...</div>`
+              : report
+                ? `
+                  <div class="report-meta">
+                    Zeitraum: <strong>${this._escapeHtml(report.label || "-")}</strong> ·
+                    Von ${this._escapeHtml(report.startMs ? this._formatDateTime(report.startMs) : "-")} bis ${this._escapeHtml(report.endMs ? this._formatDateTime(report.endMs) : "-")} ·
+                    erstellt ${this._escapeHtml(this._formatDateTime(report.generatedAt || Date.now()))}
+                  </div>
+                  <div class="report-kpis">
+                    <article class="card"><div class="k">Gesamtlast</div><div class="v">${this._formatEnergyKwh(totals.loadKwh)}</div></article>
+                    <article class="card"><div class="k">Netzbezug</div><div class="v">${this._formatEnergyKwh(totals.gridKwh)}</div></article>
+                    <article class="card"><div class="k">Autarkie</div><div class="v">${this._formatPercent(totals.autarkyPct)}</div></article>
+                    <article class="card"><div class="k">PV-Nutzung</div><div class="v">${this._formatEnergyKwh(totals.solarKwh)}</div></article>
+                    <article class="card"><div class="k">Batterie-Nutzung</div><div class="v">${this._formatEnergyKwh(totals.batteryKwh)}</div></article>
+                    <article class="card"><div class="k">Lokale Versorgung</div><div class="v">${this._formatEnergyKwh(totals.localKwh)}</div></article>
+                    <article class="card"><div class="k">Smart-Ersparnis</div><div class="v">${this._formatMoneyWithCent(savings.smartEur)}</div></article>
+                    <article class="card"><div class="k">Solar direkt</div><div class="v">${this._formatMoneyWithCent(savings.solarDirectEur)}</div></article>
+                    <article class="card"><div class="k">Akku Preisvorteil</div><div class="v">${this._formatMoneyWithCent(savings.batteryArbitrageEur)}</div></article>
+                  </div>
+                `
+                : `<div class="report-loading">Noch kein Bericht vorhanden.</div>`
+          }
+        </section>
+      </div>
+    `;
   }
 
   async _fetchTrendIfNeeded(sensors) {
@@ -4557,10 +5055,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const resetBtn = this.shadowRoot.querySelector("[data-action='reset-layout']");
     const themeToggle = this.shadowRoot.querySelector("[data-action='toggle-theme']");
     const openSettingsBtn = this.shadowRoot.querySelector("[data-action='open-settings']");
+    const openReportBtn = this.shadowRoot.querySelector("[data-action='open-report']");
     const settingsOverlay = this.shadowRoot.querySelector("[data-action='close-settings-overlay']");
     const closeSettingsBtns = this.shadowRoot.querySelectorAll("[data-action='close-settings']");
     const saveSettingsBtn = this.shadowRoot.querySelector("[data-action='save-settings']");
     const resetSettingsBtn = this.shadowRoot.querySelector("[data-action='reset-settings-yaml']");
+    const reportOverlay = this.shadowRoot.querySelector("[data-action='close-report-overlay']");
+    const closeReportBtns = this.shadowRoot.querySelectorAll("[data-action='close-report']");
+    const reportRefreshBtn = this.shadowRoot.querySelector("[data-action='report-refresh']");
+    const reportExportCsvBtn = this.shadowRoot.querySelector("[data-action='report-export-csv']");
+    const reportExportPdfBtn = this.shadowRoot.querySelector("[data-action='report-export-pdf']");
 
     toggleBtn?.addEventListener("click", () => {
       this._editMode = !this._editMode;
@@ -4581,6 +5085,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     openSettingsBtn?.addEventListener("click", () => {
       this._openSettingsEditor();
     });
+    openReportBtn?.addEventListener("click", () => {
+      this._openReportDialog();
+    });
     settingsOverlay?.addEventListener("click", (ev) => {
       if (ev.target === settingsOverlay) {
         this._closeSettingsEditor();
@@ -4596,6 +5103,33 @@ class HaEnergyDashboardPanel extends HTMLElement {
     });
     resetSettingsBtn?.addEventListener("click", () => {
       this._resetSettingsToYamlFallback();
+    });
+    reportOverlay?.addEventListener("click", (ev) => {
+      if (ev.target === reportOverlay) {
+        this._closeReportDialog();
+      }
+    });
+    closeReportBtns.forEach((btn) =>
+      btn.addEventListener("click", () => {
+        this._closeReportDialog();
+      })
+    );
+    this.shadowRoot.querySelectorAll("[data-action='report-period']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const period = btn.getAttribute("data-period");
+        if (period) {
+          this._setReportPeriod(period);
+        }
+      });
+    });
+    reportRefreshBtn?.addEventListener("click", () => {
+      void this._loadReportData(this._reportPeriod, true);
+    });
+    reportExportCsvBtn?.addEventListener("click", () => {
+      this._exportReportCsv();
+    });
+    reportExportPdfBtn?.addEventListener("click", () => {
+      this._exportReportPdf();
     });
 
     this.shadowRoot.querySelectorAll("[data-action='trend-range']").forEach((btn) => {
@@ -5357,6 +5891,77 @@ class HaEnergyDashboardPanel extends HTMLElement {
           flex-wrap: wrap;
         }
 
+        .report-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 52;
+          background: rgba(8, 14, 22, 0.56);
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          padding: 16px;
+          overflow: auto;
+        }
+
+        .report-dialog {
+          width: min(920px, 100%);
+          max-height: calc(100vh - 32px);
+          overflow: auto;
+          border-radius: 16px;
+          border: 1px solid var(--ed-border);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 250, 255, 0.93));
+          box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+          padding: 12px;
+        }
+
+        .panel.theme-dark .report-dialog {
+          background: linear-gradient(180deg, rgba(19, 29, 43, 0.97), rgba(15, 24, 36, 0.95));
+          border-color: rgba(149, 171, 193, 0.3);
+        }
+
+        .report-controls {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-bottom: 10px;
+        }
+
+        .report-loading {
+          border-radius: 12px;
+          border: 1px solid var(--ed-border);
+          background: rgba(255, 255, 255, 0.72);
+          padding: 12px;
+          color: var(--ed-muted);
+          font-size: 0.86rem;
+        }
+
+        .panel.theme-dark .report-loading {
+          background: rgba(21, 33, 47, 0.72);
+        }
+
+        .report-meta {
+          margin-bottom: 10px;
+          color: var(--ed-muted);
+          font-size: 0.78rem;
+        }
+
+        .report-kpis {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .report-kpis .card {
+          margin-bottom: 0;
+        }
+
+        .btn[disabled] {
+          opacity: 0.55;
+          cursor: not-allowed;
+          pointer-events: none;
+        }
+
         .scene {
           position: relative;
           width: 100%;
@@ -5958,12 +6563,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .narrow .kpi-strip .v { font-size: 0.76rem; }
         .narrow .icon-label { gap: 4px; }
         .narrow .icon-label ha-icon { --mdc-icon-size: 11px; }
+        .narrow .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
         @media (max-width: 390px) {
           .narrow .block-status,
           .narrow .block-diag,
           .narrow .stats,
-          .narrow .kpi-strip {
+          .narrow .kpi-strip,
+          .narrow .report-kpis {
             grid-template-columns: 1fr;
           }
         }
@@ -5990,6 +6597,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 <span class="track"><span class="thumb"></span></span>
                 <span>Dark</span>
               </label>
+              <button class="btn ghost" data-action="open-report">Bericht</button>
               <button class="btn ghost" data-action="open-settings">Einstellungen</button>
               <button class="btn ${this._editMode ? "primary" : "ghost"}" data-action="toggle-edit">
                 ${this._editMode ? "Fertig" : "Layout bearbeiten"}
@@ -6390,6 +6998,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">background</div><div class="v">${bgImage || "nicht gesetzt"}</div>
           </div>
         </details>
+        ${this._reportOpen ? this._reportModalHTML() : ""}
         ${this._settingsOpen ? this._settingsModalHTML(settingsDraft, settingsOptions) : ""}
       </div>
     `;

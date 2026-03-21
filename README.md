@@ -9,6 +9,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
+- Berichte (Monat/Jahr) als CSV/PDF direkt im Panel
 - Hover-Tooltips in den Charts (Maus ueber Diagramm = Live-Werte je Punkt)
 - Umschaltbarer Tagesverlauf: Linien- oder Balkenmodus (pro Intervall)
 - Lokaler Einstellungsdialog im Panel (YAML bleibt Fallback)
@@ -110,6 +111,13 @@ Hinweis Akku-Prognose:
 - Restlaufzeit (Entladen) wird berechnet aus `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktueller Entladeleistung.
 - Ladezeit bis Ziel wird aus `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktueller Ladeleistung berechnet.
 - Falls `battery_capacity_kwh` fehlt, versucht das Panel die Kapazität aus Attributen von `battery_soc` zu lesen.
+
+Berichte:
+
+- Über den Button `Bericht` (neben `Einstellungen`/`Layout bearbeiten`) öffnet sich ein Monats-/Jahresreport.
+- Export:
+  - CSV: Zusammenfassung + Zeitreihe je Intervall
+  - PDF: kompakte Zusammenfassung für Ablage/Weitergabe
 
 ## GitHub: Repo erstellen und pushen
 

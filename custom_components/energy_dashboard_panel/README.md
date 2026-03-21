@@ -11,6 +11,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 - Wetter-Badge via `weather_entity` oder kostenlos per `weather_location` (Open-Meteo)
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf, Sparverlauf, Monatsreport (Monat-Tab) und Lifetime-Sensoren
+- Berichte (Monat/Jahr) als CSV/PDF direkt im Panel
 - Hover-Tooltips in den Charts (Maus ueber Diagramm zeigt Einzelwerte)
 - Tagesverlauf umschaltbar zwischen Linien- und Balkenansicht
 - Lokaler Einstellungsdialog im Panel (YAML bleibt Fallback)
@@ -104,6 +105,14 @@ Hinweis Akku-Prognose:
 - Restlaufzeit (Entladen) nutzt `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktuelle Entladeleistung.
 - Ladezeit bis Ziel nutzt `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktuelle Ladeleistung.
 - Ohne `battery_capacity_kwh` wird versucht, die Kapazität aus `battery_soc`-Attributen zu lesen.
+
+Berichte:
+
+- Im Dashboard über den Button `Bericht` (Toolbar oben am Visual Layer).
+- Zeitraum: Monat oder Jahr.
+- Export:
+  - CSV (inkl. Zeitreihe)
+  - PDF (Zusammenfassung)
 
 ## Erzeugte Sensoren (Auszug)
 
