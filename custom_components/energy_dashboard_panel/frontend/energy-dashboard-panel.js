@@ -102,6 +102,12 @@ const CHIP_CABLE_COLORS = {
   gray: "#92a0b5",
   purple: "#9b7de3",
 };
+const STANDARD_CHIP_COLOR_DEFAULTS = {
+  solar_power: "aqua",
+  grid_power: "gray",
+  battery_power: "blue",
+  load_power: "orange",
+};
 
 const TREND_RANGES = {
   today: { key: "today", label: "Heute" },
@@ -659,6 +665,26 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return txt || null;
   }
 
+  _normalizeChipAccent(raw, fallback = "purple") {
+    const txt = String(raw ?? "").trim().toLowerCase();
+    if (CHIP_ACCENT_SET.has(txt)) {
+      return txt;
+    }
+    return CHIP_ACCENT_SET.has(fallback) ? fallback : "purple";
+  }
+
+  _normalizeStandardChipColors(raw) {
+    const source = this._isObject(raw) ? raw : {};
+    const normalized = { ...STANDARD_CHIP_COLOR_DEFAULTS };
+    Object.keys(STANDARD_CHIP_COLOR_DEFAULTS).forEach((key) => {
+      normalized[key] = this._normalizeChipAccent(
+        source[key],
+        STANDARD_CHIP_COLOR_DEFAULTS[key]
+      );
+    });
+    return normalized;
+  }
+
   _normalizeUiConfig(raw) {
     if (!this._isObject(raw)) {
       return {};
@@ -736,6 +762,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .filter((item) => item.entity);
     }
 
+    if (this._isObject(raw.standard_chip_colors)) {
+      cfg.standard_chip_colors = this._normalizeStandardChipColors(
+        raw.standard_chip_colors
+      );
+    }
+
     return cfg;
   }
 
@@ -769,13 +801,31 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const run = async () => {
       try {
         const raw = await this._hass.callApi("GET", EDP_API_UI_CONFIG);
-        const backendCfg = this._normalizeUiConfig(
-          this._isObject(raw) && this._isObject(raw.config) ? raw.config : raw
-        );
+        const backendRaw =
+          this._isObject(raw) && this._isObject(raw.config) ? raw.config : raw;
+        const backendCfg = this._normalizeUiConfig(backendRaw);
+        const mergedBackendCfg = { ...backendCfg };
+        const backendHasChipColors =
+          this._isObject(backendRaw) &&
+          Object.prototype.hasOwnProperty.call(
+            backendRaw,
+            "standard_chip_colors"
+          );
+        if (
+          !backendHasChipColors &&
+          this._isObject(this._uiConfig?.standard_chip_colors)
+        ) {
+          // Keep locally saved chip colors if backend response comes from an older
+          // integration version that does not expose this key yet.
+          mergedBackendCfg.standard_chip_colors =
+            this._normalizeStandardChipColors(
+              this._uiConfig.standard_chip_colors
+            );
+        }
         const prev = JSON.stringify(this._uiConfig || {});
-        const next = JSON.stringify(backendCfg || {});
+        const next = JSON.stringify(mergedBackendCfg || {});
         if (prev !== next) {
-          this._uiConfig = backendCfg;
+          this._uiConfig = mergedBackendCfg;
           this._saveUiConfig();
           this._positions = null;
           this._trendHoverIndex = null;
@@ -825,6 +875,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ...(this._isObject(base.price_sensors) ? base.price_sensors : {}),
       ...(this._isObject(override.price_sensors) ? override.price_sensors : {}),
     };
+    merged.standard_chip_colors = this._normalizeStandardChipColors({
+      ...(this._isObject(base.standard_chip_colors)
+        ? base.standard_chip_colors
+        : {}),
+      ...(this._isObject(override.standard_chip_colors)
+        ? override.standard_chip_colors
+        : {}),
+    });
     if (Array.isArray(override.extra_chips)) {
       merged.extra_chips = override.extra_chips;
     } else if (Array.isArray(base.extra_chips)) {
@@ -978,6 +1036,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ...FALLBACK_PRICE_SENSORS,
       ...(this._isObject(cfg.price_sensors) ? cfg.price_sensors : {}),
     };
+    const standardChipColors = this._normalizeStandardChipColors(
+      cfg.standard_chip_colors
+    );
     return {
       title: String(cfg.title || ""),
       background_image: String(cfg.background_image || ""),
@@ -1004,6 +1065,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       use_signed_battery_power: Boolean(cfg.use_signed_battery_power),
       invert_battery_power_sign: Boolean(cfg.invert_battery_power_sign),
       invert_load_power_sign: Boolean(cfg.invert_load_power_sign),
+      standard_chip_colors: standardChipColors,
       sensors,
       price_sensors: priceSensors,
       extra_chips_json: Array.isArray(cfg.extra_chips)
@@ -1079,6 +1141,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
       runtimePayload.home_id = homeIdInput || "";
     }
     const hasRuntimeChange = clearToken || Boolean(tokenInput) || homeChanged;
+    const standardChipColors = this._normalizeStandardChipColors({
+      solar_power: this._settingsInputValue(form, "chip_color_solar_power"),
+      grid_power: this._settingsInputValue(form, "chip_color_grid_power"),
+      battery_power: this._settingsInputValue(form, "chip_color_battery_power"),
+      load_power: this._settingsInputValue(form, "chip_color_load_power"),
+    });
 
     const ui = {
       title: toText("title"),
@@ -1096,6 +1164,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       use_signed_battery_power: this._settingsCheckboxValue(form, "use_signed_battery_power"),
       invert_battery_power_sign: this._settingsCheckboxValue(form, "invert_battery_power_sign"),
       invert_load_power_sign: this._settingsCheckboxValue(form, "invert_load_power_sign"),
+      standard_chip_colors: standardChipColors,
       sensors: {},
       price_sensors: {},
       extra_chips: parsedExtras,
@@ -1264,6 +1333,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
   _settingsModalHTML(draft, options) {
     const sensors = this._isObject(draft?.sensors) ? draft.sensors : {};
     const priceSensors = this._isObject(draft?.price_sensors) ? draft.price_sensors : {};
+    const standardChipColors = this._normalizeStandardChipColors(
+      draft?.standard_chip_colors
+    );
+    const chipColorOptions = [
+      { value: "aqua", label: "Aqua" },
+      { value: "blue", label: "Blau" },
+      { value: "orange", label: "Orange" },
+      { value: "gray", label: "Grau" },
+      { value: "purple", label: "Lila" },
+    ];
     return `
       <div class="settings-overlay" data-action="close-settings-overlay">
         <section class="settings-dialog" role="dialog" aria-modal="true" aria-label="Dashboard Einstellungen">
@@ -1402,6 +1481,40 @@ class HaEnergyDashboardPanel extends HTMLElement {
                   name: "invert_load_power_sign",
                   kind: "checkbox",
                   checked: Boolean(draft?.invert_load_power_sign),
+                })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Standard Chip Farben</h4>
+              <div class="settings-grid settings-grid-tight">
+                ${this._settingsInputRow({
+                  label: "Solar Chip",
+                  name: "chip_color_solar_power",
+                  kind: "select",
+                  value: standardChipColors.solar_power,
+                  options: chipColorOptions,
+                })}
+                ${this._settingsInputRow({
+                  label: "Netz Chip",
+                  name: "chip_color_grid_power",
+                  kind: "select",
+                  value: standardChipColors.grid_power,
+                  options: chipColorOptions,
+                })}
+                ${this._settingsInputRow({
+                  label: "Batterie Chip",
+                  name: "chip_color_battery_power",
+                  kind: "select",
+                  value: standardChipColors.battery_power,
+                  options: chipColorOptions,
+                })}
+                ${this._settingsInputRow({
+                  label: "Hauslast Chip",
+                  name: "chip_color_load_power",
+                  kind: "select",
+                  value: standardChipColors.load_power,
+                  options: chipColorOptions,
                 })}
               </div>
             </section>
@@ -6052,6 +6165,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._ensureTrendValueMode();
 
     const cfg = this._panelConfig();
+    const standardChipColors = this._normalizeStandardChipColors(
+      cfg.standard_chip_colors
+    );
     const sensors = this._sensors();
     const priceSensors = this._priceSensors();
     const weather = this._weatherData();
@@ -6290,6 +6406,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
           border-right-color: rgba(151, 173, 195, 0.14);
         }
 
+        .panel.theme-dark .card .k.icon-label ha-icon,
+        .panel.theme-dark .kpi-strip .k ha-icon,
+        .panel.theme-dark .stats .k ha-icon {
+          border-color: rgba(149, 171, 193, 0.3);
+          background: rgba(24, 37, 52, 0.76);
+          color: #9eb4c8;
+        }
+
         .panel.theme-dark .btn {
           border-color: rgba(147, 169, 189, 0.26);
           background: rgba(26, 38, 53, 0.9);
@@ -6312,7 +6436,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
         }
 
         .panel.theme-dark .trend-mix-panel,
-        .panel.theme-dark .trend-energy-main {
+        .panel.theme-dark .trend-energy-main,
+        .panel.theme-dark .savings-main {
           border-color: rgba(149, 171, 193, 0.24);
           background: rgba(21, 33, 48, 0.58);
         }
@@ -6968,26 +7093,64 @@ class HaEnergyDashboardPanel extends HTMLElement {
           margin-bottom: 10px;
         }
 
-        .kpi-strip .s {
-          min-height: 60px;
+        .card,
+        .kpi-strip .s,
+        .stats .s {
+          position: relative;
+          padding: 10px 10px 10px 64px;
+          min-height: 62px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
         }
 
-        .kpi-strip .k {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-        }
-
-        .kpi-strip .k ha-icon {
-          --mdc-icon-size: 12px;
+        .card .k.icon-label,
+        .kpi-strip .k,
+        .stats .k {
           color: var(--ed-muted);
-          opacity: 0.9;
+          font-size: 0.66rem;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          line-height: 1.05;
+          min-width: 0;
         }
 
-        .kpi-strip .v {
+        .card .k.icon-label span,
+        .kpi-strip .k span,
+        .stats .k span {
+          display: block;
+          min-width: 0;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .card .k.icon-label ha-icon,
+        .kpi-strip .k ha-icon,
+        .stats .k ha-icon {
+          position: absolute;
+          left: 11px;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 34px;
+          height: 34px;
+          display: grid;
+          place-items: center;
+          border-radius: 10px;
+          border: 1px solid rgba(23, 44, 62, 0.18);
+          background: rgba(233, 242, 249, 0.9);
+          color: #5b7387;
+          opacity: 0.98;
+          --mdc-icon-size: 21px;
+        }
+
+        .card .v,
+        .kpi-strip .v,
+        .stats .v {
           margin-top: 4px;
           white-space: nowrap;
-          font-size: 0.9rem;
+          font-size: 0.96rem;
+          font-weight: 700;
         }
 
         .card {
@@ -6995,7 +7158,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
           border: 1px solid var(--ed-border);
           background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(246, 251, 255, 0.7));
           box-shadow: 0 9px 22px rgba(20, 44, 61, 0.1);
-          padding: 9px;
           backdrop-filter: blur(6px);
         }
 
@@ -7006,11 +7168,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
           letter-spacing: 0.06em;
         }
 
-        .card .v {
-          margin-top: 5px;
-          font-size: 1.02rem;
-          font-weight: 700;
-        }
+        .card .v { font-size: 1.02rem; }
 
         .stats {
           display: grid;
@@ -7024,25 +7182,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
           backdrop-filter: blur(6px);
         }
 
-        .stats .s {
-          padding: 9px 8px;
-          border-right: 1px solid rgba(21, 40, 57, 0.08);
-        }
+        .stats .s { border-right: 1px solid rgba(21, 40, 57, 0.08); }
 
         .stats .s:last-child { border-right: 0; }
-
-        .stats .k {
-          color: var(--ed-muted);
-          font-size: 0.66rem;
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-        }
-
-        .stats .v {
-          margin-top: 5px;
-          font-size: 0.98rem;
-          font-weight: 700;
-        }
 
         .stats .v-two-way {
           font-size: 0.82rem;
@@ -7128,7 +7270,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
           display: block;
         }
 
-        .trend-energy-layout {
+        .savings-layout {
           display: grid;
           grid-template-columns: minmax(0, 4fr) clamp(240px, 18vw, 320px);
           gap: 8px;
@@ -7236,7 +7378,39 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         #savings-canvas {
           width: 100%;
-          height: 210px;
+          height: 100%;
+          display: block;
+        }
+
+        .savings-main {
+          border-radius: 12px;
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          background: rgba(248, 252, 255, 0.72);
+          padding: 6px;
+          min-width: 0;
+          min-height: 0;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          justify-content: flex-start;
+          gap: 5px;
+        }
+
+        .savings-canvas-wrap {
+          flex: 1 1 0;
+          min-height: 210px;
+          min-width: 0;
+          display: flex;
+          align-items: stretch;
+        }
+
+        .savings-canvas-wrap #savings-canvas {
+          flex: 1 1 auto;
+          min-width: 0;
+          min-height: 0;
+          width: 100%;
+          height: 100%;
           display: block;
         }
 
@@ -7533,12 +7707,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
           padding: 3px 6px;
         }
 
-        .narrow .trend-energy-layout {
+        .narrow .savings-layout {
           grid-template-columns: minmax(0, 2fr) minmax(130px, 1fr);
           gap: 6px;
         }
 
         .narrow .trend-energy-main,
+        .narrow .savings-main,
         .narrow .trend-mix-panel {
           padding: 6px;
           gap: 5px;
@@ -7616,8 +7791,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
           height: 134px;
         }
 
-        .narrow #savings-canvas {
-          height: 150px;
+        .narrow .savings-canvas-wrap {
+          min-height: 170px;
         }
 
         .narrow .chip {
@@ -7634,11 +7809,28 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .narrow .chip .meta { font-size: 0.63rem; }
         .narrow .chip .meta-inline { font-size: 0.62rem; }
         .narrow .chip .label { font-size: 0.56rem; }
-        .narrow .stats .v-two-way { font-size: 0.74rem; }
-        .narrow .kpi-strip .s { padding: 7px 6px; min-height: 54px; }
+        .narrow .card,
+        .narrow .stats .s,
+        .narrow .kpi-strip .s {
+          padding: 8px 7px 8px 56px;
+          min-height: 54px;
+        }
+        .narrow .card .k.icon-label,
+        .narrow .stats .k,
         .narrow .kpi-strip .k { font-size: 0.58rem; }
-        .narrow .kpi-strip .k ha-icon { --mdc-icon-size: 10px; }
-        .narrow .kpi-strip .v { font-size: 0.76rem; }
+        .narrow .card .k.icon-label ha-icon,
+        .narrow .stats .k ha-icon,
+        .narrow .kpi-strip .k ha-icon {
+          left: 8px;
+          width: 28px;
+          height: 28px;
+          border-radius: 8px;
+          --mdc-icon-size: 17px;
+        }
+        .narrow .card .v,
+        .narrow .stats .v,
+        .narrow .kpi-strip .v { font-size: 0.78rem; }
+        .narrow .stats .v-two-way { font-size: 0.72rem; }
         .narrow .icon-label { gap: 4px; }
         .narrow .icon-label ha-icon { --mdc-icon-size: 11px; }
         .narrow .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -7696,21 +7888,21 @@ class HaEnergyDashboardPanel extends HTMLElement {
               "Solar",
               this._formatPower(solar),
               this._positions.solar_power,
-              "aqua"
+              standardChipColors.solar_power
             )}
             ${this._chipHTML(
               "grid_power",
               "Netz",
               this._formatPower(grid),
               this._positions.grid_power,
-              "gray"
+              standardChipColors.grid_power
             )}
             ${this._chipHTML(
               "battery_power",
               "Batterie",
               this._formatPower(battery),
               this._positions.battery_power,
-              "blue",
+              standardChipColors.battery_power,
               this._formatPercent(soc),
               "SOC",
               true
@@ -7720,7 +7912,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
               "Hauslast netto",
               this._formatPower(houseLoad),
               this._positions.load_power,
-              "orange"
+              standardChipColors.load_power
             )}
             ${extraChips
               .map((chip, idx) =>
@@ -7954,26 +8146,43 @@ class HaEnergyDashboardPanel extends HTMLElement {
               <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
             </div>
           </div>
-          <div class="trend-energy-layout">
-            <div class="trend-energy-main">
-              <div class="trend-canvas-wrap">
-                <canvas id="trend-canvas"></canvas>
+          <div class="trend-energy-main">
+            <div class="trend-canvas-wrap">
+              <canvas id="trend-canvas"></canvas>
+            </div>
+            <div class="trend-legend">
+              ${
+                trendModeBars
+                  ? `
+              <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
+              <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
+              <span class="legend-item"><span class="dot batt"></span>${legendLabelBattery}</span>
+              <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
+              `
+                  : `
+              <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
+              <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
+              <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
+              `
+              }
+            </div>
+          </div>
+        </section>
+
+        <section class="trend-wrap block-trend-savings">
+          <div class="trend-head">
+            <div class="trend-title icon-label"><ha-icon icon="mdi:chart-areaspline"></ha-icon><span>Sparverlauf</span></div>
+            <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
+          </div>
+          <div class="savings-layout">
+            <div class="savings-main">
+              <div class="savings-canvas-wrap">
+                <canvas id="savings-canvas"></canvas>
               </div>
               <div class="trend-legend">
-                ${
-                  trendModeBars
-                    ? `
-                <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
-                <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
-                <span class="legend-item"><span class="dot batt"></span>${legendLabelBattery}</span>
-                <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
-                `
-                    : `
-                <span class="legend-item"><span class="dot load"></span>${legendLabelLoad}</span>
-                <span class="legend-item"><span class="dot renew"></span>${legendLabelRenew}</span>
-                <span class="legend-item"><span class="dot aut"></span>${legendLabelAutarky}</span>
-                `
-                }
+                <span class="legend-item"><span class="dot save-solar"></span>Solar-Ersparnis je Intervall</span>
+                <span class="legend-item"><span class="dot save-arb"></span>Akku-Preisvorteil je Intervall</span>
+                <span class="legend-item"><span class="dot save-cum"></span>Kumulierte Smart-Summe</span>
               </div>
             </div>
             <aside class="trend-mix-panel">
@@ -8012,19 +8221,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
               }</b></div>
               <canvas id="trend-mix-canvas"></canvas>
             </aside>
-          </div>
-        </section>
-
-        <section class="trend-wrap block-trend-savings">
-          <div class="trend-head">
-            <div class="trend-title icon-label"><ha-icon icon="mdi:chart-areaspline"></ha-icon><span>Sparverlauf</span></div>
-            <div class="trend-state">${this._trendLoading ? "Lädt..." : trendLabel}</div>
-          </div>
-          <canvas id="savings-canvas"></canvas>
-          <div class="trend-legend">
-            <span class="legend-item"><span class="dot save-solar"></span>Solar-Ersparnis je Intervall</span>
-            <span class="legend-item"><span class="dot save-arb"></span>Akku-Preisvorteil je Intervall</span>
-            <span class="legend-item"><span class="dot save-cum"></span>Kumulierte Smart-Summe</span>
           </div>
         </section>
 
@@ -8068,6 +8264,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">cfg_battery_mode</div><div class="v">${flowOpts.batterySensorMode}</div>
             <div class="k">cfg_invert_battery_sign</div><div class="v">${flowOpts.invertBatteryPowerSign ? "ja" : "nein"}</div>
             <div class="k">cfg_invert_load_sign</div><div class="v">${flowOpts.invertLoadPowerSign ? "ja" : "nein"}</div>
+            <div class="k">cfg_chip_colors</div><div class="v">${Object.entries(standardChipColors).map(([k, v]) => `${k}:${v}`).join(" | ")}</div>
             <div class="k">house_solar</div><div class="v">${this._formatPower(houseSources.solarToHouse)}</div>
             <div class="k">house_battery</div><div class="v">${this._formatPower(houseSources.batteryToHouse)}</div>
             <div class="k">house_grid</div><div class="v">${this._formatPower(houseSources.gridToHouse)}</div>

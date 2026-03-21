@@ -5,6 +5,7 @@ Eigenes Home-Assistant Sidebar-Panel fuer Solar, Batterie, Netz und Preislogik.
 ## Features
 
 - Visual Layer mit Drag-and-Drop Chips
+- Standard-Chip Farben frei konfigurierbar (Solar/Netz/Batterie/Hauslast)
 - Sensor-Mapping fuer signed oder dual (Import/Export, Laden/Entladen)
 - Tibber Preisdaten direkt per API Token
 - Tibber Token direkt im Dashboard-Einstellungsdialog setzbar (Backend-Storage)
@@ -66,6 +67,14 @@ energy_dashboard_panel:
     grid_export_power: sensor.netzeinspeisung_w
     battery_power: sensor.batterie_leistung
     battery_soc: sensor.batterie_soc
+
+  # Farben fuer die 4 Standard-Chips
+  # Erlaubte Werte: aqua | blue | orange | gray | purple
+  standard_chip_colors:
+    solar_power: aqua
+    grid_power: gray
+    battery_power: blue
+    load_power: orange
 
   extra_chips:
     - key: wallbox

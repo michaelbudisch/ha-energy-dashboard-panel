@@ -64,6 +64,7 @@ CONF_TIBBER_API_TOKEN = "tibber_api_token"
 CONF_TIBBER_API_KEY = "tibber_api_key"
 CONF_TIBBER_HOME_ID = "tibber_home_id"
 CONF_EXTRA_CHIPS = "extra_chips"
+CONF_STANDARD_CHIP_COLORS = "standard_chip_colors"
 CONF_USE_SIGNED_BATTERY_POWER = "use_signed_battery_power"
 CONF_INVERT_BATTERY_POWER_SIGN = "invert_battery_power_sign"
 CONF_INVERT_LOAD_POWER_SIGN = "invert_load_power_sign"
@@ -116,4 +117,13 @@ DEFAULT_PRICE_SENSORS = {
     CONF_PRICE_MIN_TODAY: None,
     CONF_PRICE_MAX_TODAY: None,
     CONF_PRICE_LEVEL: None,
+}
+
+CHIP_ACCENT_OPTIONS = ("aqua", "blue", "orange", "gray", "purple")
+
+DEFAULT_STANDARD_CHIP_COLORS = {
+    CONF_SOLAR_POWER: "aqua",
+    CONF_GRID_POWER: "gray",
+    CONF_BATTERY_POWER: "blue",
+    CONF_LOAD_POWER: "orange",
 }

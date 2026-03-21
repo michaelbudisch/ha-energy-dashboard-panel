@@ -7,6 +7,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Tibber Token direkt im Dashboard-Einstellungsdialog setzbar (Backend-Storage)
 - Open-Meteo Wetter (kostenlos, nur Ort noetig)
 - Drag-and-Drop Visual Layer mit frei platzierbaren Chips
+- Standard-Chip Farben frei konfigurierbar (Solar/Netz/Batterie/Hauslast)
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
 - Berichte (Monat/Jahr) als CSV/PDF direkt im Panel
@@ -77,6 +78,14 @@ energy_dashboard_panel:
     grid_export_power: sensor.netzeinspeisung_w
     battery_power: sensor.batterie_leistung
     battery_soc: sensor.batterie_soc
+
+  # Farben fuer die 4 Standard-Chips
+  # Erlaubte Werte: aqua | blue | orange | gray | purple
+  standard_chip_colors:
+    solar_power: aqua
+    grid_power: gray
+    battery_power: blue
+    load_power: orange
 ```
 
 Hinweis zum Hintergrundbild:

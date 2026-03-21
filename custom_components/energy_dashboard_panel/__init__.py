@@ -22,8 +22,10 @@ except ImportError:
     _async_load_platform = None
 
 from .const import (
+    CHIP_ACCENT_OPTIONS,
     CONF_BACKGROUND_IMAGE,
     CONF_EXTRA_CHIPS,
+    CONF_STANDARD_CHIP_COLORS,
     CONF_BATTERY_POWER,
     CONF_BATTERY_CHARGE_POWER,
     CONF_BATTERY_DISCHARGE_POWER,
@@ -78,6 +80,7 @@ from .const import (
     DEFAULT_INVERT_BATTERY_POWER_SIGN,
     DEFAULT_INVERT_LOAD_POWER_SIGN,
     DEFAULT_PRICE_SENSORS,
+    DEFAULT_STANDARD_CHIP_COLORS,
     DEFAULT_SENSORS,
     DEFAULT_USE_SIGNED_BATTERY_POWER,
     DOMAIN,
@@ -154,6 +157,17 @@ def _normalize_sensor_mode(raw: object, default: str) -> str:
     return default
 
 
+def _normalize_chip_accent(raw: object, default: str) -> str:
+    """Normalize chip accent color to supported preset values."""
+    txt = _clean_non_empty(raw)
+    if txt is None:
+        return default
+    accent = txt.lower()
+    if accent in CHIP_ACCENT_OPTIONS:
+        return accent
+    return default
+
+
 def _normalize_ui_config(raw: object) -> dict[str, Any]:
     """Normalize runtime UI overrides saved by the panel settings dialog."""
     if not isinstance(raw, dict):
@@ -203,6 +217,16 @@ def _normalize_ui_config(raw: object) -> dict[str, Any]:
     for key in bool_keys:
         if key in raw:
             out[key] = bool(raw.get(key))
+
+    raw_standard_chip_colors = raw.get(CONF_STANDARD_CHIP_COLORS)
+    if isinstance(raw_standard_chip_colors, dict):
+        chip_colors: dict[str, str] = {}
+        for key, default_accent in DEFAULT_STANDARD_CHIP_COLORS.items():
+            if key in raw_standard_chip_colors:
+                chip_colors[key] = _normalize_chip_accent(
+                    raw_standard_chip_colors.get(key), default_accent
+                )
+        out[CONF_STANDARD_CHIP_COLORS] = chip_colors
 
     if CONF_BATTERY_CAPACITY_KWH in raw:
         out[CONF_BATTERY_CAPACITY_KWH] = _coerce_float(raw.get(CONF_BATTERY_CAPACITY_KWH), 0.1, 1000.0)
@@ -295,6 +319,18 @@ def _merge_conf_with_ui(base_conf: dict[str, Any], ui_cfg: dict[str, Any]) -> di
         merged_price_sensors.update(ui_cfg[CONF_PRICE_SENSORS])
         merged[CONF_PRICE_SENSORS] = merged_price_sensors
 
+    if isinstance(ui_cfg.get(CONF_STANDARD_CHIP_COLORS), dict):
+        merged_chip_colors = {
+            **DEFAULT_STANDARD_CHIP_COLORS,
+            **(merged.get(CONF_STANDARD_CHIP_COLORS) or {}),
+        }
+        for key, default_accent in DEFAULT_STANDARD_CHIP_COLORS.items():
+            merged_chip_colors[key] = _normalize_chip_accent(
+                merged_chip_colors.get(key),
+                default_accent,
+            )
+        merged[CONF_STANDARD_CHIP_COLORS] = merged_chip_colors
+
     if isinstance(ui_cfg.get(CONF_EXTRA_CHIPS), list):
         merged[CONF_EXTRA_CHIPS] = ui_cfg[CONF_EXTRA_CHIPS]
 
@@ -335,6 +371,16 @@ def _build_effective_config(
         conf_effective[CONF_PRICE_SENSORS] = copy.deepcopy(DEFAULT_PRICE_SENSORS)
     if CONF_EXTRA_CHIPS not in conf_effective or not isinstance(conf_effective.get(CONF_EXTRA_CHIPS), list):
         conf_effective[CONF_EXTRA_CHIPS] = []
+    raw_chip_colors = conf_effective.get(CONF_STANDARD_CHIP_COLORS)
+    chip_colors = (
+        raw_chip_colors
+        if isinstance(raw_chip_colors, dict)
+        else {}
+    )
+    conf_effective[CONF_STANDARD_CHIP_COLORS] = {
+        key: _normalize_chip_accent(chip_colors.get(key), default_accent)
+        for key, default_accent in DEFAULT_STANDARD_CHIP_COLORS.items()
+    }
 
     conf_effective[CONF_GRID_SENSOR_MODE] = _normalize_sensor_mode(
         conf_effective.get(CONF_GRID_SENSOR_MODE),
@@ -402,6 +448,10 @@ def _build_panel_config(conf_effective: dict[str, Any]) -> dict[str, Any]:
         "price_entity": _resolve_price_entity(conf_effective),
         "price_fallback_entity": conf_effective.get(CONF_PRICE_FALLBACK_ENTITY),
         "extra_chips": conf_effective.get(CONF_EXTRA_CHIPS, []),
+        "standard_chip_colors": conf_effective.get(
+            CONF_STANDARD_CHIP_COLORS,
+            DEFAULT_STANDARD_CHIP_COLORS,
+        ),
         "use_signed_battery_power": conf_effective.get(
             CONF_USE_SIGNED_BATTERY_POWER,
             DEFAULT_USE_SIGNED_BATTERY_POWER,
@@ -512,6 +562,27 @@ _EXTRA_CHIP_SCHEMA = vol.Schema(
     }
 )
 
+_STANDARD_CHIP_COLORS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(
+            CONF_SOLAR_POWER,
+            default=DEFAULT_STANDARD_CHIP_COLORS[CONF_SOLAR_POWER],
+        ): vol.In(CHIP_ACCENT_OPTIONS),
+        vol.Optional(
+            CONF_GRID_POWER,
+            default=DEFAULT_STANDARD_CHIP_COLORS[CONF_GRID_POWER],
+        ): vol.In(CHIP_ACCENT_OPTIONS),
+        vol.Optional(
+            CONF_BATTERY_POWER,
+            default=DEFAULT_STANDARD_CHIP_COLORS[CONF_BATTERY_POWER],
+        ): vol.In(CHIP_ACCENT_OPTIONS),
+        vol.Optional(
+            CONF_LOAD_POWER,
+            default=DEFAULT_STANDARD_CHIP_COLORS[CONF_LOAD_POWER],
+        ): vol.In(CHIP_ACCENT_OPTIONS),
+    }
+)
+
 _SENSOR_MODE_SCHEMA = vol.In(["auto", "signed", "dual"])
 
 CONFIG_SCHEMA = vol.Schema(
@@ -567,6 +638,10 @@ CONFIG_SCHEMA = vol.Schema(
                 vol.Optional(CONF_EXTRA_CHIPS, default=[]): vol.All(
                     cv.ensure_list, [_EXTRA_CHIP_SCHEMA]
                 ),
+                vol.Optional(
+                    CONF_STANDARD_CHIP_COLORS,
+                    default=DEFAULT_STANDARD_CHIP_COLORS,
+                ): _STANDARD_CHIP_COLORS_SCHEMA,
                 vol.Optional(CONF_SENSORS, default=DEFAULT_SENSORS): _SENSOR_SCHEMA,
             }
         )
