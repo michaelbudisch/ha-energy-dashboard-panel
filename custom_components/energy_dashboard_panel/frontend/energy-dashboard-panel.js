@@ -114,6 +114,7 @@ const TREND_CHART_MODES = {
   line: "line",
   bars: "bars",
 };
+const TREND_STEP_MIN_MS = 15 * 60 * 1000;
 
 const GRID_STATUS_ENTER_W = 80;
 const GRID_STATUS_EXIT_W = 50;
@@ -2144,7 +2145,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         label: TREND_RANGES.day24.label,
         startMs,
         endMs: now,
-        stepMs: 10 * 60 * 1000,
+        stepMs: TREND_STEP_MIN_MS,
       };
     }
     if (this._trendRange === TREND_RANGES.week7.key) {
@@ -2213,7 +2214,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       label: TREND_RANGES.today.label,
       startMs,
       endMs: now,
-      stepMs: 10 * 60 * 1000,
+      stepMs: TREND_STEP_MIN_MS,
     };
   }
 
@@ -2911,7 +2912,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
   _buildTrendKey(sensors, windowCfg, priceCfg = null, gridSignedEntityId = null) {
     const flowOpts = this._flowOptions();
-    const endBucket = Math.floor(windowCfg.endMs / (10 * 60 * 1000));
+    const stepForBucket = Math.max(
+      TREND_STEP_MIN_MS,
+      Number(windowCfg?.stepMs) || TREND_STEP_MIN_MS
+    );
+    const endBucket = Math.floor(windowCfg.endMs / stepForBucket);
     return [
       windowCfg.key,
       Math.floor(windowCfg.startMs / (60 * 60 * 1000)),

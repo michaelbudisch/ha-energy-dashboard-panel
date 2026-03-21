@@ -89,8 +89,15 @@ _TIBBER_API_URL = "https://api.tibber.com/v1-beta/gql"
 _TIBBER_LIVE_UPDATE_INTERVAL = timedelta(seconds=20)
 _OPEN_METEO_GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 _OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+_PRICE_BUCKET_SECONDS = 15 * 60
 _MAX_PRICE_CACHE_HOURS = 240
-_MAX_PENDING_BUCKETS = 120
+_MAX_PRICE_CACHE_BUCKETS = _MAX_PRICE_CACHE_HOURS * (3600 // _PRICE_BUCKET_SECONDS)
+_MAX_PENDING_HOURS = 120
+_MAX_PENDING_BUCKETS = _MAX_PENDING_HOURS * (3600 // _PRICE_BUCKET_SECONDS)
+_MAX_NEAREST_PRICE_LOOKUP_HOURS = 2
+_MAX_NEAREST_PRICE_LOOKUP_BUCKETS = _MAX_NEAREST_PRICE_LOOKUP_HOURS * (
+    3600 // _PRICE_BUCKET_SECONDS
+)
 _BALANCE_OK_THRESHOLD_W = 50.0
 _BALANCE_WARN_THRESHOLD_W = 150.0
 SCAN_INTERVAL = timedelta(minutes=5)
@@ -279,12 +286,12 @@ def _parse_iso_utc(raw: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _hour_bucket_key(ts: datetime) -> int:
-    """Convert a timestamp to an integer UTC hour bucket."""
+def _price_bucket_key(ts: datetime) -> int:
+    """Convert a timestamp to an integer UTC price bucket (15 min)."""
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     ts_utc = ts.astimezone(timezone.utc)
-    return int(ts_utc.timestamp() // 3600)
+    return int(ts_utc.timestamp() // _PRICE_BUCKET_SECONDS)
 
 
 def _select_tibber_home(homes: Any, home_id: str | None) -> dict[str, Any] | None:
@@ -980,19 +987,25 @@ class _LifetimeAccumulator:
         if key == "balance_quality_pct":
             return self._balance_quality_pct
         if key == "price_backfill_pending":
-            return len(self._pending_samples)
+            pending_hours = len(self._pending_samples) * (_PRICE_BUCKET_SECONDS / 3600.0)
+            return pending_hours
         return None
 
     @property
     def extra_attributes(self) -> dict[str, Any]:
         """Diagnostic attributes for entities."""
+        pending_hours = len(self._pending_samples) * (_PRICE_BUCKET_SECONDS / 3600.0)
         return {
             "price_entity": self._last_price_entity or self._price_entity,
             "price_source": self._last_price_source,
             "price_eur_kwh": round(self._last_price_eur, 6) if self._last_price_eur is not None else None,
             "price_bucket": self._last_price_bucket,
-            "price_cache_hours": len(self._price_cache_eur),
-            "price_backfill_pending": len(self._pending_samples),
+            "price_bucket_seconds": _PRICE_BUCKET_SECONDS,
+            "price_cache_buckets": len(self._price_cache_eur),
+            "price_cache_hours": round(len(self._price_cache_eur) * (_PRICE_BUCKET_SECONDS / 3600.0), 3),
+            "price_backfill_pending_buckets": len(self._pending_samples),
+            "price_backfill_pending_hours": round(pending_hours, 3),
+            "price_backfill_pending": round(pending_hours, 3),
             "grid_sensor_mode": self._grid_sensor_mode,
             "battery_sensor_mode": self._battery_sensor_mode,
             "balance_error_w": round(self._balance_error_w, 3) if self._balance_error_w is not None else None,
@@ -1022,6 +1035,13 @@ class _LifetimeAccumulator:
         self._battery_pool_kwh = float(data.get("battery_pool_kwh", 0.0))
         self._battery_pool_cost_eur = float(data.get("battery_pool_cost_eur", 0.0))
         cache_raw = data.get("price_cache_eur")
+        cache_resolution_s_raw = data.get("price_cache_resolution_s", 3600)
+        try:
+            cache_resolution_s = int(cache_resolution_s_raw)
+        except (TypeError, ValueError):
+            cache_resolution_s = 3600
+        if cache_resolution_s <= 0:
+            cache_resolution_s = 3600
         if isinstance(cache_raw, dict):
             parsed: dict[int, float] = {}
             for raw_key, raw_value in cache_raw.items():
@@ -1031,25 +1051,71 @@ class _LifetimeAccumulator:
                 except (TypeError, ValueError):
                     continue
                 if value == value:
-                    parsed[key] = value
+                    if cache_resolution_s == _PRICE_BUCKET_SECONDS:
+                        parsed[key] = value
+                    elif (
+                        cache_resolution_s > _PRICE_BUCKET_SECONDS
+                        and cache_resolution_s % _PRICE_BUCKET_SECONDS == 0
+                    ):
+                        # Legacy hourly cache -> expand to all 15-minute buckets.
+                        factor = cache_resolution_s // _PRICE_BUCKET_SECONDS
+                        base_key = key * factor
+                        for offset in range(factor):
+                            parsed[base_key + offset] = value
+                    elif (
+                        cache_resolution_s < _PRICE_BUCKET_SECONDS
+                        and _PRICE_BUCKET_SECONDS % cache_resolution_s == 0
+                    ):
+                        factor = _PRICE_BUCKET_SECONDS // cache_resolution_s
+                        parsed[key // factor] = value
+                    else:
+                        parsed[key] = value
             if parsed:
                 self._price_cache_eur = parsed
-                if len(self._price_cache_eur) > _MAX_PRICE_CACHE_HOURS:
-                    for key in sorted(self._price_cache_eur)[:-_MAX_PRICE_CACHE_HOURS]:
+                if len(self._price_cache_eur) > _MAX_PRICE_CACHE_BUCKETS:
+                    for key in sorted(self._price_cache_eur)[:-_MAX_PRICE_CACHE_BUCKETS]:
                         self._price_cache_eur.pop(key, None)
 
         pending_raw = data.get("pending_samples")
+        pending_resolution_s_raw = data.get("pending_resolution_s", 3600)
+        try:
+            pending_resolution_s = int(pending_resolution_s_raw)
+        except (TypeError, ValueError):
+            pending_resolution_s = 3600
+        if pending_resolution_s <= 0:
+            pending_resolution_s = 3600
         if isinstance(pending_raw, list):
             parsed_pending: list[dict[str, float]] = []
             for item in pending_raw:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    hour = int(item.get("hour"))
+                    if "bucket" in item:
+                        bucket = int(item.get("bucket"))
+                        bucket_resolution_s = pending_resolution_s
+                    else:
+                        # Legacy format used "hour" buckets.
+                        bucket = int(item.get("hour"))
+                        bucket_resolution_s = 3600
                 except (TypeError, ValueError):
                     continue
+                normalized_bucket = bucket
+                if bucket_resolution_s == _PRICE_BUCKET_SECONDS:
+                    normalized_bucket = bucket
+                elif (
+                    bucket_resolution_s > _PRICE_BUCKET_SECONDS
+                    and bucket_resolution_s % _PRICE_BUCKET_SECONDS == 0
+                ):
+                    factor = bucket_resolution_s // _PRICE_BUCKET_SECONDS
+                    normalized_bucket = bucket * factor
+                elif (
+                    bucket_resolution_s < _PRICE_BUCKET_SECONDS
+                    and _PRICE_BUCKET_SECONDS % bucket_resolution_s == 0
+                ):
+                    factor = _PRICE_BUCKET_SECONDS // bucket_resolution_s
+                    normalized_bucket = bucket // factor
                 sample = {
-                    "hour": float(hour),
+                    "bucket": float(normalized_bucket),
                     "non_grid_kwh": float(item.get("non_grid_kwh", 0.0)),
                     "solar_direct_kwh": float(item.get("solar_direct_kwh", 0.0)),
                     "grid_to_battery_kwh": float(item.get("grid_to_battery_kwh", 0.0)),
@@ -1057,7 +1123,7 @@ class _LifetimeAccumulator:
                 }
                 parsed_pending.append(sample)
             if parsed_pending:
-                parsed_pending.sort(key=lambda row: row.get("hour", 0.0))
+                parsed_pending.sort(key=lambda row: row.get("bucket", 0.0))
                 self._pending_samples = parsed_pending[-_MAX_PENDING_BUCKETS:]
 
     async def _async_save(self) -> None:
@@ -1071,7 +1137,9 @@ class _LifetimeAccumulator:
             "battery_shift_sell_eur": self._battery_shift_sell_eur,
             "battery_pool_kwh": self._battery_pool_kwh,
             "battery_pool_cost_eur": self._battery_pool_cost_eur,
+            "price_cache_resolution_s": _PRICE_BUCKET_SECONDS,
             "price_cache_eur": {str(k): v for k, v in self._price_cache_eur.items()},
+            "pending_resolution_s": _PRICE_BUCKET_SECONDS,
             "pending_samples": self._pending_samples[-_MAX_PENDING_BUCKETS:],
             "saved_at": dt_util.utcnow().isoformat(),
         }
@@ -1206,16 +1274,16 @@ class _LifetimeAccumulator:
         self._resolved_load_source = "sensor"
         return resolved
 
-    def _cache_price(self, hour_key: int, price_eur: float) -> bool:
-        """Cache hourly EUR/kWh values for resilient backfill."""
+    def _cache_price(self, bucket_key: int, price_eur: float) -> bool:
+        """Cache EUR/kWh values per price bucket for resilient backfill."""
         if price_eur != price_eur:
             return False
-        old = self._price_cache_eur.get(hour_key)
+        old = self._price_cache_eur.get(bucket_key)
         if old is not None and abs(old - price_eur) <= 1e-9:
             return False
-        self._price_cache_eur[hour_key] = price_eur
-        if len(self._price_cache_eur) > _MAX_PRICE_CACHE_HOURS:
-            for key in sorted(self._price_cache_eur)[:-_MAX_PRICE_CACHE_HOURS]:
+        self._price_cache_eur[bucket_key] = price_eur
+        if len(self._price_cache_eur) > _MAX_PRICE_CACHE_BUCKETS:
+            for key in sorted(self._price_cache_eur)[:-_MAX_PRICE_CACHE_BUCKETS]:
                 self._price_cache_eur.pop(key, None)
         return True
 
@@ -1230,7 +1298,7 @@ class _LifetimeAccumulator:
         return _price_to_eur(raw, unit)
 
     def _refresh_price_cache(self, now_utc: datetime) -> bool:
-        """Refresh hourly cache from configured price entity."""
+        """Refresh 15-minute price cache from configured price entity."""
         entity_id = self._price_entity
         if not entity_id:
             return False
@@ -1244,7 +1312,7 @@ class _LifetimeAccumulator:
 
         current_eur = self._price_from_state(state)
         if current_eur is not None:
-            changed = self._cache_price(_hour_bucket_key(now_utc), current_eur) or changed
+            changed = self._cache_price(_price_bucket_key(now_utc), current_eur) or changed
 
         for attr_key in ("raw_today", "raw_tomorrow", "today", "tomorrow"):
             rows = state.attributes.get(attr_key)
@@ -1262,19 +1330,19 @@ class _LifetimeAccumulator:
                 eur = _price_to_eur(total, unit)
                 if eur is None:
                     continue
-                changed = self._cache_price(_hour_bucket_key(starts_at), eur) or changed
+                changed = self._cache_price(_price_bucket_key(starts_at), eur) or changed
 
         return changed
 
-    def _price_for_hour(self, hour_key: int) -> tuple[float | None, str]:
-        """Resolve price by exact hour key, then short nearest fallback."""
-        exact = self._price_cache_eur.get(hour_key)
+    def _price_for_bucket(self, bucket_key: int) -> tuple[float | None, str]:
+        """Resolve price by exact bucket key, then short nearest fallback."""
+        exact = self._price_cache_eur.get(bucket_key)
         if exact is not None:
-            return exact, "cache_hour"
+            return exact, "cache_bucket"
         if not self._price_cache_eur:
             return None, "missing"
-        nearest_key = min(self._price_cache_eur, key=lambda key: abs(key - hour_key))
-        if abs(nearest_key - hour_key) <= 2:
+        nearest_key = min(self._price_cache_eur, key=lambda key: abs(key - bucket_key))
+        if abs(nearest_key - bucket_key) <= _MAX_NEAREST_PRICE_LOOKUP_BUCKETS:
             return self._price_cache_eur[nearest_key], "cache_nearest"
         return None, "missing"
 
@@ -1316,7 +1384,7 @@ class _LifetimeAccumulator:
         return changed
 
     def _queue_pending_sample(self, sample: dict[str, float]) -> bool:
-        """Queue interval sample until an hourly price is available."""
+        """Queue interval sample until a bucket price is available."""
         non_grid_kwh = max(0.0, float(sample.get("non_grid_kwh", 0.0)))
         solar_direct_kwh = max(0.0, float(sample.get("solar_direct_kwh", 0.0)))
         grid_to_battery_kwh = max(0.0, float(sample.get("grid_to_battery_kwh", 0.0)))
@@ -1329,8 +1397,8 @@ class _LifetimeAccumulator:
         ):
             return False
 
-        hour = int(sample.get("hour", 0))
-        if self._pending_samples and int(self._pending_samples[-1].get("hour", -1)) == hour:
+        bucket = int(sample.get("bucket", 0))
+        if self._pending_samples and int(self._pending_samples[-1].get("bucket", -1)) == bucket:
             last = self._pending_samples[-1]
             last["non_grid_kwh"] = float(last.get("non_grid_kwh", 0.0)) + non_grid_kwh
             last["solar_direct_kwh"] = float(last.get("solar_direct_kwh", 0.0)) + solar_direct_kwh
@@ -1344,7 +1412,7 @@ class _LifetimeAccumulator:
 
         self._pending_samples.append(
             {
-                "hour": float(hour),
+                "bucket": float(bucket),
                 "non_grid_kwh": non_grid_kwh,
                 "solar_direct_kwh": solar_direct_kwh,
                 "grid_to_battery_kwh": grid_to_battery_kwh,
@@ -1367,8 +1435,8 @@ class _LifetimeAccumulator:
             if blocked:
                 remaining.append(sample)
                 continue
-            hour = int(sample.get("hour", 0))
-            price_eur, source = self._price_for_hour(hour)
+            bucket = int(sample.get("bucket", 0))
+            price_eur, source = self._price_for_bucket(bucket)
             if price_eur is None:
                 blocked = True
                 remaining.append(sample)
@@ -1376,7 +1444,7 @@ class _LifetimeAccumulator:
             changed = self._apply_priced_sample(sample, price_eur) or changed
             self._last_price_source = f"backfill:{source}"
             self._last_price_eur = price_eur
-            self._last_price_bucket = hour
+            self._last_price_bucket = bucket
 
         if len(remaining) != len(self._pending_samples):
             changed = True
@@ -1477,7 +1545,7 @@ class _LifetimeAccumulator:
         )
 
         sample = {
-            "hour": float(_hour_bucket_key(prev_ts)),
+            "bucket": float(_price_bucket_key(prev_ts)),
             "non_grid_kwh": 0.0,
             "solar_direct_kwh": 0.0,
             "grid_to_battery_kwh": 0.0,
@@ -1510,18 +1578,18 @@ class _LifetimeAccumulator:
         price_cache_changed = self._refresh_price_cache(now_utc)
         changed = price_cache_changed or changed
 
-        hour = int(sample["hour"])
-        price_eur, source = self._price_for_hour(hour)
+        bucket = int(sample["bucket"])
+        price_eur, source = self._price_for_bucket(bucket)
         if price_eur is not None:
             changed = self._apply_priced_sample(sample, price_eur) or changed
             self._last_price_source = source
             self._last_price_eur = price_eur
-            self._last_price_bucket = hour
+            self._last_price_bucket = bucket
         else:
             changed = self._queue_pending_sample(sample) or changed
             self._last_price_source = "missing"
             self._last_price_eur = None
-            self._last_price_bucket = hour
+            self._last_price_bucket = bucket
 
         changed = self._flush_pending_samples() or changed
         return changed
