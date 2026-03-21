@@ -151,6 +151,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendValueModeLoaded = false;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._priceHoverIndex = null;
+    this._priceChartRows = [];
     this._uiConfig = {};
     this._uiConfigLoaded = false;
     this._uiConfigBackendSyncStarted = false;
@@ -280,6 +282,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendCache.clear();
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._priceHoverIndex = null;
+    this._priceChartRows = [];
     this._lastHassSignature = "";
     this._cachedAutoPriceEntity = null;
     this._cachedAutoWeatherEntity = null;
@@ -414,6 +418,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       this._chartRedrawFrame = 0;
       this._drawTrendChart();
       this._drawSavingsChart();
+      this._drawPriceChart();
     });
   }
 
@@ -434,7 +439,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     const trend = this.shadowRoot?.querySelector("#trend-canvas");
     const savings = this.shadowRoot?.querySelector("#savings-canvas");
-    if (!trend || !savings) {
+    const price = this.shadowRoot?.querySelector("#price-canvas");
+    const observed = [trend, savings, price].filter(Boolean);
+    if (observed.length === 0) {
       return;
     }
     if (this._chartResizeObserver) {
@@ -442,8 +449,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       this._chartResizeObserver = null;
     }
     this._chartResizeObserver = new ResizeObserver(() => this._scheduleChartRedraw());
-    this._chartResizeObserver.observe(trend);
-    this._chartResizeObserver.observe(savings);
+    observed.forEach((canvas) => this._chartResizeObserver.observe(canvas));
   }
 
   _hoverIndexFromPointer(event, canvas, pad, pointCount) {
@@ -473,7 +479,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
       canvas.style.cursor = "crosshair";
 
       canvas.addEventListener("pointermove", (event) => {
-        const livePoints = this._trendData?.points;
+        const livePoints =
+          type === "price"
+            ? this._priceChartRows
+            : this._trendData?.points;
         const liveCount = Array.isArray(livePoints) ? livePoints.length : 0;
         const idx = this._hoverIndexFromPointer(event, canvas, pad, liveCount);
         if (type === "trend") {
@@ -481,8 +490,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
             this._trendHoverIndex = idx;
             this._scheduleChartRedraw();
           }
-        } else if (this._savingsHoverIndex !== idx) {
-          this._savingsHoverIndex = idx;
+        } else if (type === "savings") {
+          if (this._savingsHoverIndex !== idx) {
+            this._savingsHoverIndex = idx;
+            this._scheduleChartRedraw();
+          }
+        } else if (this._priceHoverIndex !== idx) {
+          this._priceHoverIndex = idx;
           this._scheduleChartRedraw();
         }
       });
@@ -493,8 +507,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
             this._trendHoverIndex = null;
             this._scheduleChartRedraw();
           }
-        } else if (this._savingsHoverIndex !== null) {
-          this._savingsHoverIndex = null;
+        } else if (type === "savings") {
+          if (this._savingsHoverIndex !== null) {
+            this._savingsHoverIndex = null;
+            this._scheduleChartRedraw();
+          }
+        } else if (this._priceHoverIndex !== null) {
+          this._priceHoverIndex = null;
           this._scheduleChartRedraw();
         }
       });
@@ -507,6 +526,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     bindOne(this.shadowRoot?.querySelector("#savings-canvas"), "savings", {
       left: 56,
       right: 56,
+    });
+    bindOne(this.shadowRoot?.querySelector("#price-canvas"), "price", {
+      left: 34,
+      right: 10,
     });
   }
 
@@ -2656,6 +2679,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
         entityId: null,
         label: "Kein Preis-Sensor",
         detail: "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
+        chartRows: [],
+        chartMin: null,
+        chartNow: null,
+        chartMax: null,
       };
     }
 
@@ -2752,6 +2779,26 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const mostExpensiveRow =
       futureRows.length > 0 ? futureRows.reduce((a, b) => (a.p >= b.p ? a : b)) : null;
 
+    const chartRowsWindow = uniqueRows.filter(
+      (row) => row.t >= now - 12 * 60 * 60 * 1000 && row.t <= now + 24 * 60 * 60 * 1000
+    );
+    const chartRowsEur =
+      chartRowsWindow.length >= 2
+        ? chartRowsWindow
+        : futureRows.length >= 2
+          ? futureRows
+          : uniqueRows;
+    const chartRows = chartRowsEur.map((row) => ({
+      t: row.t,
+      p: this._priceFromEur(row.p, displayUnit),
+    }));
+    const chartValuesEur = chartRowsEur.map((row) => row.p).filter((row) => row !== null && row !== undefined);
+    const chartMinEur =
+      chartValuesEur.length > 0 ? Math.min(...chartValuesEur) : (minTodayEur ?? cheapEur);
+    const chartMaxEur =
+      chartValuesEur.length > 0 ? Math.max(...chartValuesEur) : (maxTodayEur ?? expensiveEur);
+    const chartNowEur = nowPriceEur;
+
     const resolutionLabel = `${Math.max(1, Math.round(resolutionMs / (60 * 1000)))}m`;
     const sourceText =
       attrRows.length > 0
@@ -2777,6 +2824,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
         entityId: currentEntityId || null,
         label: "Preis-Sensor ohne Werte",
         detail: currentEntityId || "tibber_api_token/tibber_api_key oder price_fallback_entity konfigurieren",
+        chartRows: [],
+        chartMin: null,
+        chartNow: null,
+        chartMax: null,
       };
     }
 
@@ -2794,6 +2845,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
       levelText: levelState ?? "--",
       sourceText,
       action,
+      chartRows,
+      chartMin: this._priceFromEur(chartMinEur, displayUnit),
+      chartNow: this._priceFromEur(chartNowEur, displayUnit),
+      chartMax: this._priceFromEur(chartMaxEur, displayUnit),
       cheapestText: cheapestRow
         ? `${this._formatTime(cheapestRow.t)} · ${this._formatPrice(this._priceFromEur(cheapestRow.p, displayUnit), displayUnit)}`
         : minTodayEur !== null
@@ -4538,6 +4593,184 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
   }
 
+  _drawPriceChart() {
+    const canvas = this.shadowRoot?.querySelector("#price-canvas");
+    if (!canvas) {
+      return;
+    }
+
+    const priceInfo = this._priceInsight();
+    const rowsRaw = Array.isArray(priceInfo?.chartRows) ? priceInfo.chartRows : [];
+    const rows = rowsRaw
+      .filter((row) => Number.isFinite(row?.t) && Number.isFinite(row?.p))
+      .sort((a, b) => a.t - b.t);
+    this._priceChartRows = rows;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 520;
+    const cssHeight = canvas.clientHeight || 164;
+    canvas.width = Math.floor(cssWidth * dpr);
+    canvas.height = Math.floor(cssHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (!priceInfo?.available || rows.length < 2) {
+      this._priceHoverIndex = null;
+      ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+      ctx.font = "12px Sora, Segoe UI, sans-serif";
+      ctx.fillText("Kein Preisverlauf verfügbar", 10, 18);
+      return;
+    }
+
+    const pad = { left: 34, right: 10, top: 10, bottom: 22 };
+    const w = cssWidth - pad.left - pad.right;
+    const h = cssHeight - pad.top - pad.bottom;
+    if (!(w > 10 && h > 10)) {
+      return;
+    }
+
+    const minTs = rows[0].t;
+    const maxTs = rows[rows.length - 1].t;
+    const spanTs = Math.max(1, maxTs - minTs);
+    const values = rows.map((row) => row.p);
+    const minVal = Math.min(...values);
+    const maxVal = Math.max(...values);
+    const spanVal = Math.max(0.001, maxVal - minVal);
+    const yPad = spanVal * 0.12;
+    const yMin = Math.max(0, minVal - yPad);
+    const yMax = maxVal + yPad;
+    const ySpan = Math.max(0.001, yMax - yMin);
+
+    const xAt = (ts) => pad.left + ((ts - minTs) / spanTs) * w;
+    const yAt = (price) => pad.top + h - ((price - yMin) / ySpan) * h;
+
+    ctx.strokeStyle = this._themeDark ? "rgba(142, 165, 186, 0.22)" : "rgba(41, 66, 90, 0.12)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 3; i += 1) {
+      const y = pad.top + (h / 3) * i;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(pad.left + w, y);
+      ctx.stroke();
+    }
+
+    const areaPath = new Path2D();
+    rows.forEach((row, idx) => {
+      const x = xAt(row.t);
+      const y = yAt(row.p);
+      if (idx === 0) {
+        areaPath.moveTo(x, y);
+      } else {
+        areaPath.lineTo(x, y);
+      }
+    });
+    const firstX = xAt(rows[0].t);
+    const lastX = xAt(rows[rows.length - 1].t);
+    areaPath.lineTo(lastX, pad.top + h);
+    areaPath.lineTo(firstX, pad.top + h);
+    areaPath.closePath();
+
+    const fillGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
+    fillGrad.addColorStop(0, this._themeDark ? "rgba(96, 177, 235, 0.42)" : "rgba(104, 186, 237, 0.5)");
+    fillGrad.addColorStop(1, this._themeDark ? "rgba(96, 177, 235, 0.12)" : "rgba(104, 186, 237, 0.18)");
+    ctx.fillStyle = fillGrad;
+    ctx.fill(areaPath);
+
+    ctx.beginPath();
+    rows.forEach((row, idx) => {
+      const x = xAt(row.t);
+      const y = yAt(row.p);
+      if (idx === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.strokeStyle = this._themeDark ? "#7bc4ff" : "#3aa2ef";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const nowTs = Date.now();
+    if (nowTs >= minTs && nowTs <= maxTs) {
+      const nowX = xAt(nowTs);
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = this._themeDark ? "rgba(255, 131, 131, 0.85)" : "rgba(202, 58, 58, 0.72)";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(nowX, pad.top);
+      ctx.lineTo(nowX, pad.top + h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.font = "10px Sora, Segoe UI, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = this._themeDark ? "rgba(255, 182, 182, 0.94)" : "rgba(179, 41, 41, 0.86)";
+      ctx.fillText("Jetzt", nowX, pad.top + 10);
+    }
+
+    const hoverIdx = this._priceHoverIndex;
+    if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < rows.length) {
+      const row = rows[hoverIdx];
+      const x = xAt(row.t);
+      const y = yAt(row.p);
+      ctx.strokeStyle = this._themeDark ? "rgba(164, 188, 214, 0.48)" : "rgba(39, 58, 77, 0.42)";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, pad.top + h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.beginPath();
+      ctx.fillStyle = this._themeDark ? "#9ed3ff" : "#268ddd";
+      ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = this._themeDark ? "rgba(22, 33, 48, 0.9)" : "rgba(255, 255, 255, 0.9)";
+      ctx.stroke();
+
+      this._drawCanvasTooltip(
+        ctx,
+        [
+          `Zeit: ${this._formatTime(row.t)}`,
+          `Preis: ${this._formatPrice(row.p, priceInfo.unit)}`,
+        ],
+        x,
+        y,
+        cssWidth,
+        cssHeight
+      );
+    }
+
+    const unitLower = String(priceInfo.unit || "").toLowerCase();
+    const axisUnit = unitLower === "ct/kwh" ? "ct" : "€";
+    const fmtAxis = (value) => {
+      if (!Number.isFinite(value)) {
+        return "--";
+      }
+      if (axisUnit === "ct") {
+        return `${value.toFixed(0)}`;
+      }
+      return value.toFixed(2);
+    };
+
+    ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+    ctx.font = "10px Sora, Segoe UI, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(`${fmtAxis(yMax)} ${axisUnit}`, pad.left - 4, pad.top + 10);
+    ctx.fillText(`${fmtAxis(yMin)} ${axisUnit}`, pad.left - 4, pad.top + h);
+    ctx.textAlign = "left";
+    ctx.fillText(this._formatTime(minTs), pad.left, pad.top + h + 14);
+    ctx.textAlign = "right";
+    ctx.fillText(this._formatTime(maxTs), pad.left + w, pad.top + h + 14);
+  }
+
   _weatherEntityId() {
     const configured = this._panelConfig().weather_entity;
     if (configured) {
@@ -5315,6 +5548,19 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._setBoundText("price-cheapest-window", priceInfo.available ? priceInfo.cheapestText : "--");
     this._setBoundText("price-expensive-window", priceInfo.available ? priceInfo.expensiveText : "--");
     this._setBoundText("price-level", priceInfo.available ? priceInfo.levelText : "--");
+    this._setBoundText(
+      "price-chart-min",
+      priceInfo.available ? this._formatPrice(priceInfo.chartMin, priceInfo.unit) : "--"
+    );
+    this._setBoundText(
+      "price-chart-now",
+      priceInfo.available ? this._formatPrice(priceInfo.chartNow, priceInfo.unit) : "--"
+    );
+    this._setBoundText(
+      "price-chart-max",
+      priceInfo.available ? this._formatPrice(priceInfo.chartMax, priceInfo.unit) : "--"
+    );
+    this._drawPriceChart();
   }
 
   _bindInteractions() {
@@ -5756,6 +6002,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
           border-color: rgba(151, 173, 194, 0.24);
           background: rgba(24, 37, 52, 0.9);
           color: #a8bdd1;
+        }
+
+        .panel.theme-dark .price-chart-wrap {
+          border-color: rgba(149, 171, 193, 0.24);
+          background: rgba(21, 33, 48, 0.78);
+        }
+
+        .panel.theme-dark .price-kpi {
+          border-color: rgba(149, 171, 193, 0.24);
+          background: rgba(24, 37, 52, 0.7);
         }
 
         .panel.theme-dark .source-track {
@@ -6697,6 +6953,68 @@ class HaEnergyDashboardPanel extends HTMLElement {
           margin-bottom: 6px;
         }
 
+        .price-layout {
+          display: flex;
+          gap: 10px;
+          align-items: stretch;
+        }
+
+        .price-left {
+          flex: 0 1 320px;
+          min-width: 220px;
+          max-width: 430px;
+        }
+
+        .price-right {
+          flex: 1 1 0;
+          min-width: 0;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .price-kpis {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 6px;
+        }
+
+        .price-kpi {
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          border-radius: 10px;
+          padding: 5px 7px;
+          background: rgba(244, 249, 253, 0.9);
+        }
+
+        .price-kpi .k {
+          font-size: 0.59rem;
+          color: var(--ed-muted);
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          line-height: 1.05;
+        }
+
+        .price-kpi .v {
+          font-size: 0.75rem;
+          font-weight: 700;
+          margin-top: 2px;
+          line-height: 1.12;
+          color: var(--ed-text);
+        }
+
+        .price-chart-wrap {
+          border: 1px solid rgba(21, 40, 57, 0.12);
+          border-radius: 12px;
+          background: rgba(245, 250, 255, 0.88);
+          padding: 6px 6px 4px;
+        }
+
+        #price-canvas {
+          width: 100%;
+          height: 164px;
+          display: block;
+        }
+
         .price-info {
           font-size: 0.72rem;
           color: var(--ed-muted);
@@ -6817,6 +7135,53 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .narrow .source-row {
           grid-template-columns: 72px 1fr auto;
           gap: 6px;
+        }
+
+        .narrow .price-layout {
+          display: flex;
+          gap: 8px;
+          align-items: stretch;
+        }
+
+        .narrow .price-left {
+          flex: 0 1 42%;
+          min-width: 118px;
+          max-width: none;
+        }
+
+        .narrow .price-right {
+          flex: 1 1 58%;
+          min-width: 0;
+        }
+
+        .narrow .price-main {
+          font-size: 0.92rem;
+          margin-bottom: 4px;
+        }
+
+        .narrow .price-info {
+          font-size: 0.66rem;
+          gap: 1px;
+        }
+
+        .narrow .price-kpis {
+          gap: 4px;
+        }
+
+        .narrow .price-kpi {
+          padding: 4px 5px;
+        }
+
+        .narrow .price-kpi .k {
+          font-size: 0.53rem;
+        }
+
+        .narrow .price-kpi .v {
+          font-size: 0.66rem;
+        }
+
+        .narrow #price-canvas {
+          height: 126px;
         }
 
         .narrow #trend-canvas {
@@ -7051,26 +7416,55 @@ class HaEnergyDashboardPanel extends HTMLElement {
               ${priceInfo.available ? priceInfo.action : "Nicht verfügbar"}
             </div>
           </div>
-          <div class="price-main" data-bind="price-main">${
-            priceInfo.available
-              ? this._formatPrice(priceInfo.nowPrice, priceInfo.unit)
-              : "Kein Preis verfügbar"
-          }</div>
-          <div class="price-info">
-            <div>Datenquelle: <span data-bind="price-source">${priceInfo.available ? priceInfo.sourceText : "--"}</span></div>
-            <div>Günstig-Schwelle: <span data-bind="price-cheap">${
-              priceInfo.available ? this._formatPrice(priceInfo.cheap, priceInfo.unit) : "--"
-            }</span></div>
-            <div>Teuer-Schwelle: <span data-bind="price-expensive">${
-              priceInfo.available ? this._formatPrice(priceInfo.expensive, priceInfo.unit) : "--"
-            }</span></div>
-            <div>Nächstes günstigstes Fenster: <span data-bind="price-cheapest-window">${
-              priceInfo.available ? priceInfo.cheapestText : "--"
-            }</span></div>
-            <div>Nächstes teuerstes Fenster: <span data-bind="price-expensive-window">${
-              priceInfo.available ? priceInfo.expensiveText : "--"
-            }</span></div>
-            <div>Preisniveau: <span data-bind="price-level">${priceInfo.available ? priceInfo.levelText : "--"}</span></div>
+          <div class="price-layout">
+            <div class="price-left">
+              <div class="price-main" data-bind="price-main">${
+                priceInfo.available
+                  ? this._formatPrice(priceInfo.nowPrice, priceInfo.unit)
+                  : "Kein Preis verfügbar"
+              }</div>
+              <div class="price-info">
+                <div>Datenquelle: <span data-bind="price-source">${priceInfo.available ? priceInfo.sourceText : "--"}</span></div>
+                <div>Günstig-Schwelle: <span data-bind="price-cheap">${
+                  priceInfo.available ? this._formatPrice(priceInfo.cheap, priceInfo.unit) : "--"
+                }</span></div>
+                <div>Teuer-Schwelle: <span data-bind="price-expensive">${
+                  priceInfo.available ? this._formatPrice(priceInfo.expensive, priceInfo.unit) : "--"
+                }</span></div>
+                <div>Nächstes günstigstes Fenster: <span data-bind="price-cheapest-window">${
+                  priceInfo.available ? priceInfo.cheapestText : "--"
+                }</span></div>
+                <div>Nächstes teuerstes Fenster: <span data-bind="price-expensive-window">${
+                  priceInfo.available ? priceInfo.expensiveText : "--"
+                }</span></div>
+                <div>Preisniveau: <span data-bind="price-level">${priceInfo.available ? priceInfo.levelText : "--"}</span></div>
+              </div>
+            </div>
+            <div class="price-right">
+              <div class="price-kpis">
+                <div class="price-kpi">
+                  <div class="k">Min</div>
+                  <div class="v" data-bind="price-chart-min">${
+                    priceInfo.available ? this._formatPrice(priceInfo.chartMin, priceInfo.unit) : "--"
+                  }</div>
+                </div>
+                <div class="price-kpi">
+                  <div class="k">Aktuell</div>
+                  <div class="v" data-bind="price-chart-now">${
+                    priceInfo.available ? this._formatPrice(priceInfo.chartNow, priceInfo.unit) : "--"
+                  }</div>
+                </div>
+                <div class="price-kpi">
+                  <div class="k">Max</div>
+                  <div class="v" data-bind="price-chart-max">${
+                    priceInfo.available ? this._formatPrice(priceInfo.chartMax, priceInfo.unit) : "--"
+                  }</div>
+                </div>
+              </div>
+              <div class="price-chart-wrap">
+                <canvas id="price-canvas"></canvas>
+              </div>
+            </div>
           </div>
         </section>
 
@@ -7301,6 +7695,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       try {
         this._drawTrendChart();
         this._drawSavingsChart();
+        this._drawPriceChart();
       } catch (error) {
         this._renderFatalError(error);
       }
