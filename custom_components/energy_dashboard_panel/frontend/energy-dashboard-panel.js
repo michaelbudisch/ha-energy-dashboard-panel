@@ -131,6 +131,7 @@ const TREND_VALUE_MODES = {
   kwh: "kwh",
 };
 const TREND_STEP_MIN_MS = 15 * 60 * 1000;
+const TREND_DATA_REV = "2026-03-23-flow-split-2";
 
 const GRID_STATUS_ENTER_W = 80;
 const GRID_STATUS_EXIT_W = 50;
@@ -850,9 +851,22 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return stats;
     }
     const values = Array.isArray(detailSeries.values) ? detailSeries.values : [];
+    const points = Array.isArray(detailSeries.points) ? detailSeries.points : [];
     const stepHours = Number(detailSeries.stepHours) || TREND_STEP_MIN_MS / (60 * 60 * 1000);
     const valid = values.filter((value) => value !== null && value !== undefined && Number.isFinite(value));
     const count = valid.length;
+    const integrateFieldKwh = (primaryField, fallbackField = null) =>
+      points.reduce((sum, point) => {
+        const rawPrimary = point?.[primaryField];
+        const rawFallback = fallbackField ? point?.[fallbackField] : null;
+        const source =
+          rawPrimary === null || rawPrimary === undefined ? rawFallback : rawPrimary;
+        const watts = Number(source);
+        if (!Number.isFinite(watts) || watts <= 0) {
+          return sum;
+        }
+        return sum + (watts * stepHours) / 1000;
+      }, 0);
 
     const add = (label, value) => {
       stats.push({ label, value });
@@ -880,7 +894,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
         : 0;
 
     if (cfg.mode === "grid_signed") {
-      add("Bezug", this._formatEnergyKwh(posKwh));
+      const gridToHouseKwh = integrateFieldKwh("gridToHousePower", "gridCover");
+      const gridToBatteryKwh = integrateFieldKwh("gridToBatteryPower", null);
+      const gridSplitTotalKwh = Math.max(0, gridToHouseKwh + gridToBatteryKwh);
+      add("Bezug (aufgeteilt)", this._formatEnergyKwh(gridSplitTotalKwh));
+      add("Davon im Haus verbraucht", this._formatEnergyKwh(gridToHouseKwh));
+      add("Davon in den Akku geladen", this._formatEnergyKwh(gridToBatteryKwh));
+      if (Math.abs(posKwh - gridSplitTotalKwh) > 0.15) {
+        add("Bezug (Rohsensor)", this._formatEnergyKwh(posKwh));
+      }
       add("Einspeisung", this._formatEnergyKwh(negKwh));
       add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
       add("Peak Bezug", this._formatPower(peakPos));
@@ -890,7 +912,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
 
     if (cfg.mode === "battery_signed") {
+      const batteryToHouseKwh = integrateFieldKwh("batteryToHousePower", "batteryCover");
       add("Entladen", this._formatEnergyKwh(posKwh));
+      add("Davon im Haus verbraucht", this._formatEnergyKwh(batteryToHouseKwh));
       add("Laden", this._formatEnergyKwh(negKwh));
       add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
       add("Peak Entladen", this._formatPower(peakPos));
@@ -903,6 +927,25 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const peakW = positive.length > 0 ? Math.max(...positive) : 0;
     const avgW = positive.length > 0 ? positive.reduce((sum, value) => sum + value, 0) / positive.length : 0;
     const activeHours = positive.filter((value) => value > 1).length * stepHours;
+    if (cfg.mode === "solar_positive") {
+      const solarToHouseKwhRaw = integrateFieldKwh("solarToHousePower", "solarCover");
+      const solarToBatteryKwhRaw = integrateFieldKwh("solarToBatteryPower", null);
+      const solarToHouseKwh = this._clamp(solarToHouseKwhRaw, 0, totalKwh);
+      const solarToBatteryKwh = this._clamp(
+        solarToBatteryKwhRaw,
+        0,
+        Math.max(0, totalKwh - solarToHouseKwh)
+      );
+      const solarExportEtcKwh = Math.max(0, totalKwh - solarToHouseKwh - solarToBatteryKwh);
+      add("Erzeugung", this._formatEnergyKwh(totalKwh));
+      add("Davon im Haus verbraucht", this._formatEnergyKwh(solarToHouseKwh));
+      add("Davon in den Akku geladen", this._formatEnergyKwh(solarToBatteryKwh));
+      add("Überschuss", this._formatEnergyKwh(solarExportEtcKwh));
+      add("Peak", this._formatPower(peakW));
+      add("Ø Leistung", this._formatPower(avgW));
+      return stats;
+    }
+
     add("Energie", this._formatEnergyKwh(totalKwh));
     add("Peak", this._formatPower(peakW));
     add("Ø Leistung", this._formatPower(avgW));
@@ -926,9 +969,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
       cfg.mode === "grid_signed" || cfg.mode === "battery_signed";
     const directionHint =
       cfg.mode === "grid_signed"
-        ? "Positiv = Netzbezug · Negativ = Einspeisung"
+        ? "Positiv = Netzbezug gesamt · Negativ = Einspeisung"
         : cfg.mode === "battery_signed"
           ? "Positiv = Entladen · Negativ = Laden"
+          : cfg.mode === "solar_positive"
+            ? "Erzeugung gesamt (Hauslast-Anteil in Kennzahlen)"
           : "Positiv = Leistungsaufnahme/Erzeugung";
 
     return `
@@ -3869,6 +3914,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     );
     const endBucket = Math.floor(windowCfg.endMs / stepForBucket);
     return [
+      TREND_DATA_REV,
       windowCfg.key,
       Math.floor(windowCfg.startMs / (60 * 60 * 1000)),
       endBucket,
@@ -4266,6 +4312,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
         solarCover: null,
         batteryCover: null,
         gridCover: null,
+        solarToHousePower: null,
+        solarToBatteryPower: null,
+        gridToHousePower: null,
+        gridToBatteryPower: null,
+        batteryToHousePower: null,
         solarPower: null,
         gridSignedPower: null,
         gridImportPower: null,
@@ -4338,7 +4389,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
       }
 
       batteryCover = this._clamp(batteryCover, 0, batteryDischarge);
-      solarCover = this._clamp(solarCover, 0, Math.max(0, load - batteryCover));
+      const solarCoverMaxByLoad = Math.max(0, load - batteryCover);
+      const solarCoverMaxByProd =
+        solar === null || solar === undefined ? solarCoverMaxByLoad : Math.max(0, solar);
+      solarCover = this._clamp(solarCover, 0, Math.min(solarCoverMaxByLoad, solarCoverMaxByProd));
       gridCover = Math.max(0, load - solarCover - batteryCover);
 
       const renew = Math.max(0, load - gridCover);
@@ -4356,6 +4410,58 @@ class HaEnergyDashboardPanel extends HTMLElement {
       point.solarCover = solarCover;
       point.batteryCover = batteryCover;
       point.gridCover = gridCover;
+
+      const gridToHousePower = this._clamp(gridCover, 0, houseNet);
+      const solarAvailPower =
+        solar === null || solar === undefined ? null : Math.max(0, solar);
+      const solarToHousePower = solarAvailPower === null
+        ? Math.min(houseNet, solarCover)
+        : Math.min(houseNet, solarCover, solarAvailPower);
+      const batteryToHousePower = Math.min(houseNet, batteryDischarge);
+      let gridToBatteryPower = 0;
+      if (batteryCharge > 0) {
+        const estGridToBatteryByMeter =
+          gridImportTotalPower === null
+            ? null
+            : Math.max(0, gridImportTotalPower - gridToHousePower);
+        if (solar !== null) {
+          const solarSurplus = Math.max(0, solar - houseNet);
+          const solarToBattery = Math.min(batteryCharge, solarSurplus);
+          const residualChargeNeed = Math.max(0, batteryCharge - solarToBattery);
+          if (estGridToBatteryByMeter !== null) {
+            gridToBatteryPower = this._clamp(
+              estGridToBatteryByMeter,
+              0,
+              residualChargeNeed
+            );
+          } else {
+            gridToBatteryPower = residualChargeNeed;
+          }
+        } else if (estGridToBatteryByMeter !== null) {
+          gridToBatteryPower = this._clamp(estGridToBatteryByMeter, 0, batteryCharge);
+        } else if (gridImport !== null) {
+          gridToBatteryPower = Math.min(
+            batteryCharge,
+            Math.max(0, gridImport - gridToHousePower)
+          );
+        }
+      }
+      let solarToBatteryPower = Math.max(0, batteryCharge - gridToBatteryPower);
+      if (solarAvailPower !== null) {
+        const solarLeftForBattery = Math.max(0, solarAvailPower - solarToHousePower);
+        solarToBatteryPower = this._clamp(solarToBatteryPower, 0, solarLeftForBattery);
+        gridToBatteryPower = this._clamp(
+          Math.max(0, batteryCharge - solarToBatteryPower),
+          0,
+          batteryCharge
+        );
+      }
+      point.gridToHousePower = gridToHousePower;
+      point.gridToBatteryPower = gridToBatteryPower;
+      point.solarToHousePower = solarToHousePower;
+      point.solarToBatteryPower = solarToBatteryPower;
+      point.batteryToHousePower = batteryToHousePower;
+
       sumLoad += load;
       sumRenewable += renew;
       if (autarky !== null) {
@@ -4367,46 +4473,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
         priceIntervals += 1;
         let stepSolarEur = 0;
         let stepArbitrageEur = 0;
-        const gridToHousePower = this._clamp(gridCover, 0, houseNet);
         const nonGridToHousePower = Math.max(0, houseNet - gridToHousePower);
         savedNonGridEur += (nonGridToHousePower * stepHours / 1000) * priceEur;
         nonGridPricedIntervals += 1;
 
         if (solarCover > 0) {
-          const solarToHousePower = Math.min(houseNet, solarCover);
           const solarStepEur = (solarToHousePower * stepHours / 1000) * priceEur;
           savedSolarDirectEur += solarStepEur;
           stepSolarEur += solarStepEur;
           solarPricedIntervals += 1;
-        }
-
-        let gridToBatteryPower = 0;
-        if (batteryCharge > 0) {
-          const estGridToBatteryByMeter =
-            gridImportTotalPower === null
-              ? null
-              : Math.max(0, gridImportTotalPower - gridToHousePower);
-          if (solar !== null) {
-            const solarSurplus = Math.max(0, solar - houseNet);
-            const solarToBattery = Math.min(batteryCharge, solarSurplus);
-            const residualChargeNeed = Math.max(0, batteryCharge - solarToBattery);
-            if (estGridToBatteryByMeter !== null) {
-              gridToBatteryPower = this._clamp(
-                estGridToBatteryByMeter,
-                0,
-                residualChargeNeed
-              );
-            } else {
-              gridToBatteryPower = residualChargeNeed;
-            }
-          } else if (estGridToBatteryByMeter !== null) {
-            gridToBatteryPower = this._clamp(estGridToBatteryByMeter, 0, batteryCharge);
-          } else if (gridImport !== null) {
-            gridToBatteryPower = Math.min(
-              batteryCharge,
-              Math.max(0, gridImport - gridToHousePower)
-            );
-          }
         }
 
         const gridToBatteryKwh = (gridToBatteryPower * stepHours) / 1000;
@@ -4417,7 +4492,6 @@ class HaEnergyDashboardPanel extends HTMLElement {
           batteryShiftBuyEur += buyCost;
         }
 
-        const batteryToHousePower = Math.min(houseNet, batteryDischarge);
         const batteryToHouseKwh = (batteryToHousePower * stepHours) / 1000;
         if (batteryToHouseKwh > 0 && batteryGridPoolKwh > 0) {
           const usedGridKwh = Math.min(batteryToHouseKwh, batteryGridPoolKwh);
@@ -5185,9 +5259,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const empty = {
       available: false,
       totalKwh: 0,
+      houseLoadKwh: 0,
       solarKwh: 0,
       batteryKwh: 0,
       gridKwh: 0,
+      solarProducedKwh: 0,
+      gridImportTotalKwh: 0,
+      gridImportAccountedKwh: 0,
+      gridImportDiffKwh: 0,
+      gridExportTotalKwh: 0,
+      gridToBatteryKwh: 0,
+      batteryDischargeTotalKwh: 0,
+      batteryChargeTotalKwh: 0,
       solarPct: 0,
       batteryPct: 0,
       gridPct: 0,
@@ -5203,16 +5286,62 @@ class HaEnergyDashboardPanel extends HTMLElement {
     let batteryKwh = 0;
     let gridKwh = 0;
     let loadKwh = 0;
+    let solarProducedKwh = 0;
+    let gridImportTotalKwh = 0;
+    let gridExportTotalKwh = 0;
+    let gridToBatteryKwh = 0;
+    let batteryDischargeTotalKwh = 0;
+    let batteryChargeTotalKwh = 0;
 
     data.points.forEach((point) => {
-      const solarW = Math.max(0, Number(point?.solarCover) || 0);
-      const batteryW = Math.max(0, Number(point?.batteryCover) || 0);
-      const gridW = Math.max(0, Number(point?.gridCover) || 0);
-      const loadW = Math.max(0, Number(point?.load) || 0);
+      const solarW = Math.max(
+        0,
+        Number(
+          point?.solarToHousePower === null || point?.solarToHousePower === undefined
+            ? point?.solarCover
+            : point?.solarToHousePower
+        ) || 0
+      );
+      const batteryW = Math.max(
+        0,
+        Number(
+          point?.batteryToHousePower === null || point?.batteryToHousePower === undefined
+            ? point?.batteryCover
+            : point?.batteryToHousePower
+        ) || 0
+      );
+      const gridW = Math.max(
+        0,
+        Number(
+          point?.gridToHousePower === null || point?.gridToHousePower === undefined
+            ? point?.gridCover
+            : point?.gridToHousePower
+        ) || 0
+      );
+      const loadW = Math.max(
+        0,
+        Number(
+          point?.houseNetPower === null || point?.houseNetPower === undefined
+            ? point?.load
+            : point?.houseNetPower
+        ) || 0
+      );
+      const solarProducedW = Math.max(0, Number(point?.solarPower) || 0);
+      const gridImportTotalW = Math.max(0, Number(point?.gridImportPower) || 0);
+      const gridExportTotalW = Math.max(0, Number(point?.gridExportPower) || 0);
+      const gridToBatteryW = Math.max(0, Number(point?.gridToBatteryPower) || 0);
+      const batteryDischargeW = Math.max(0, Number(point?.batteryDischargePower) || 0);
+      const batteryChargeW = Math.max(0, Number(point?.batteryChargePower) || 0);
 
       solarKwh += (solarW * stepHours) / 1000;
       batteryKwh += (batteryW * stepHours) / 1000;
       gridKwh += (gridW * stepHours) / 1000;
+      solarProducedKwh += (solarProducedW * stepHours) / 1000;
+      gridImportTotalKwh += (gridImportTotalW * stepHours) / 1000;
+      gridExportTotalKwh += (gridExportTotalW * stepHours) / 1000;
+      gridToBatteryKwh += (gridToBatteryW * stepHours) / 1000;
+      batteryDischargeTotalKwh += (batteryDischargeW * stepHours) / 1000;
+      batteryChargeTotalKwh += (batteryChargeW * stepHours) / 1000;
       if (loadW > 0) {
         loadKwh += (loadW * stepHours) / 1000;
       }
@@ -5229,13 +5358,24 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const batteryPct = baseKwh > 0 ? this._clamp((batteryKwh / baseKwh) * 100, 0, 100) : 0;
     const gridPct = baseKwh > 0 ? this._clamp((gridKwh / baseKwh) * 100, 0, 100) : 0;
     const autarkyPct = baseKwh > 0 ? this._clamp(((solarKwh + batteryKwh) / baseKwh) * 100, 0, 100) : null;
+    const gridImportAccountedKwh = Math.max(0, gridKwh + gridToBatteryKwh);
+    const gridImportDiffKwh = gridImportTotalKwh - gridImportAccountedKwh;
 
     return {
       available: true,
       totalKwh: baseKwh,
+      houseLoadKwh: baseKwh,
       solarKwh,
       batteryKwh,
       gridKwh,
+      solarProducedKwh,
+      gridImportTotalKwh,
+      gridImportAccountedKwh,
+      gridImportDiffKwh,
+      gridExportTotalKwh,
+      gridToBatteryKwh,
+      batteryDischargeTotalKwh,
+      batteryChargeTotalKwh,
       solarPct,
       batteryPct,
       gridPct,
@@ -5306,7 +5446,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     ctx.font = "600 11px Sora, Segoe UI, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("Verbrauch", centerX, centerY - 10);
+    ctx.fillText("Hauslast", centerX, centerY - 10);
     ctx.fillStyle = this._themeDark ? "#e7f1fa" : "#1a2c3b";
     ctx.font = "700 13px Sora, Segoe UI, sans-serif";
     ctx.fillText(this._formatEnergyKwh(total), centerX, centerY + 10);
@@ -6791,6 +6931,26 @@ class HaEnergyDashboardPanel extends HTMLElement {
         : "--"
     );
     this._setBoundText("trend-mix-autarky", trendMix.available ? this._formatPercent(trendMix.autarkyPct) : "--");
+    this._setBoundText(
+      "trend-mix-produced",
+      trendMix.available ? this._formatEnergyKwh(trendMix.solarProducedKwh) : "--"
+    );
+    this._setBoundText(
+      "trend-mix-grid-total",
+      trendMix.available ? this._formatEnergyKwh(trendMix.gridImportAccountedKwh) : "--"
+    );
+    this._setBoundText(
+      "trend-mix-grid-battery",
+      trendMix.available ? this._formatEnergyKwh(trendMix.gridToBatteryKwh) : "--"
+    );
+    this._setBoundText(
+      "trend-mix-grid-sensor",
+      trendMix.available ? this._formatEnergyKwh(trendMix.gridImportTotalKwh) : "--"
+    );
+    this._setBoundText(
+      "trend-mix-grid-diff",
+      trendMix.available ? `${trendMix.gridImportDiffKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(trendMix.gridImportDiffKwh))}` : "--"
+    );
     this._drawTrendMixChart();
     this._drawPriceChart();
     if (this._detailOpen) {
@@ -8341,6 +8501,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
           color: var(--ed-text);
         }
 
+        .trend-mix-note {
+          font-size: 0.63rem;
+          color: var(--ed-muted);
+          line-height: 1.3;
+        }
+
+        .trend-mix-note b {
+          color: var(--ed-text);
+        }
+
         .trend-energy-main .trend-legend {
           margin-top: 0;
           font-size: 0.62rem;
@@ -8726,6 +8896,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .narrow .trend-mix-autarky {
           font-size: 0.64rem;
+        }
+
+        .narrow .trend-mix-note {
+          font-size: 0.57rem;
+          line-height: 1.25;
         }
 
         .narrow .trend-energy-main .trend-legend {
@@ -9175,11 +9350,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
               </div>
             </div>
             <aside class="trend-mix-panel">
-              <div class="trend-mix-title icon-label"><ha-icon icon="mdi:chart-donut"></ha-icon><span>Verbrauchsmix (${trendLabel})</span></div>
+              <div class="trend-mix-title icon-label"><ha-icon icon="mdi:chart-donut"></ha-icon><span>Hauslast-Mix (${trendLabel})</span></div>
               <div class="trend-mix-rows">
                 <div class="trend-mix-row">
                   <span class="dot renew"></span>
-                  <span>Solar</span>
+                  <span>Solar (Haus)</span>
                   <span class="v" data-bind="trend-mix-solar">${
                     trendMix.available
                       ? `${this._formatEnergyKwh(trendMix.solarKwh)} · ${trendMix.solarPct.toFixed(0)} %`
@@ -9188,7 +9363,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 </div>
                 <div class="trend-mix-row">
                   <span class="dot batt"></span>
-                  <span>Akku</span>
+                  <span>Akku (Haus)</span>
                   <span class="v" data-bind="trend-mix-battery">${
                     trendMix.available
                       ? `${this._formatEnergyKwh(trendMix.batteryKwh)} · ${trendMix.batteryPct.toFixed(0)} %`
@@ -9197,13 +9372,37 @@ class HaEnergyDashboardPanel extends HTMLElement {
                 </div>
                 <div class="trend-mix-row">
                   <span class="dot grid"></span>
-                  <span>Netz</span>
+                  <span>Netz (Haus)</span>
                   <span class="v" data-bind="trend-mix-grid">${
                     trendMix.available
                       ? `${this._formatEnergyKwh(trendMix.gridKwh)} · ${trendMix.gridPct.toFixed(0)} %`
                       : "--"
                   }</span>
                 </div>
+              </div>
+              <div class="trend-mix-note">
+                Mix zeigt nur die Deckung der Hauslast.
+              </div>
+              <div class="trend-mix-note">
+                Solar-Erzeugung gesamt: <b data-bind="trend-mix-produced">${
+                  trendMix.available ? this._formatEnergyKwh(trendMix.solarProducedKwh) : "--"
+                }</b> · Netzbezug gesamt (Haus+Akku): <b data-bind="trend-mix-grid-total">${
+                  trendMix.available ? this._formatEnergyKwh(trendMix.gridImportAccountedKwh) : "--"
+                }</b>
+              </div>
+              <div class="trend-mix-note">
+                Davon in den Akku geladen (Netz): <b data-bind="trend-mix-grid-battery">${
+                  trendMix.available ? this._formatEnergyKwh(trendMix.gridToBatteryKwh) : "--"
+                }</b>
+              </div>
+              <div class="trend-mix-note">
+                Roh-Zähler Netzbezug: <b data-bind="trend-mix-grid-sensor">${
+                  trendMix.available ? this._formatEnergyKwh(trendMix.gridImportTotalKwh) : "--"
+                }</b> · Differenz: <b data-bind="trend-mix-grid-diff">${
+                  trendMix.available
+                    ? `${trendMix.gridImportDiffKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(trendMix.gridImportDiffKwh))}`
+                    : "--"
+                }</b>
               </div>
               <div class="trend-mix-autarky">Autarkiegrad: <b data-bind="trend-mix-autarky">${
                 trendMix.available ? this._formatPercent(trendMix.autarkyPct) : "--"
