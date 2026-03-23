@@ -71,12 +71,22 @@ energy_dashboard_panel:
     # Wenn nicht gesetzt, wird load_power automatisch berechnet:
     # load = grid_power + solar_power + max(battery_power, 0)
     # load_power: sensor.hausverbrauch_watt
+    # Optional: kumulative Lastenergie fuer genauere Verlaeufe:
+    # load_energy: sensor.hausverbrauch_gesamt_kwh
     # Lokaler Zwei-Wege-Zaehler (bevorzugt in grid_sensor_mode: auto)
     grid_power: sensor.zaehler_zweiwege_leistung
     # Optional als Fallback:
     grid_import_power: sensor.netzbezug_w
     grid_export_power: sensor.netzeinspeisung_w
+    # Optional fuer exakte Verbrauchs-/Mix-Bilanzen (kumulative Zaehler in kWh):
+    grid_import_energy: sensor.gesamtbezug_kwh
+    grid_export_energy: sensor.gesamteinspeisung_kwh
     battery_power: sensor.batterie_leistung
+    # Optional: kumulative Batterieenergie fuer exaktere Aufteilung:
+    # battery_charge_energy: sensor.akkuladung_gesamt_kwh
+    # battery_discharge_energy: sensor.akkuentladung_gesamt_kwh
+    # Optional: kumulative PV-Energie:
+    # solar_energy: sensor.pv_erzeugung_gesamt_kwh
     battery_soc: sensor.batterie_soc
 
   # Farben fuer die 4 Standard-Chips
@@ -101,6 +111,13 @@ Hinweis Netzsensoren:
   `sensor.energy_dashboard_panel_tibber_grid_power` als Live-Fallback
   (wenn `tibber_api_token`/`tibber_api_key` gesetzt ist und Tibber-Livewerte verfügbar sind).
 - `grid_import_power`/`grid_export_power` bleiben zusätzlich als Fallback nutzbar.
+- Wenn `grid_import_energy` (und optional `grid_export_energy`) gesetzt sind, nutzt der
+  Tages-/Monats-/Gesamtverlauf diese Zählerstände vorrangig für genauere kWh-Bilanzen
+  und fällt automatisch auf die bisherige Leistungsintegration zurück.
+- Dasselbe gilt optional für `solar_energy`, `load_energy`,
+  `battery_charge_energy` und `battery_discharge_energy`:
+  Wenn gesetzt, werden sie vorrangig genutzt, sonst bleibt die bisherige
+  Leistungs-Fallback-Logik aktiv.
 
 Hinweis Tibber Token:
 

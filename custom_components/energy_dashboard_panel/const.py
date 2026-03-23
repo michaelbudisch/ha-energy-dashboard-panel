@@ -46,9 +46,15 @@ CONF_LOAD_POWER = "load_power"
 CONF_GRID_POWER = "grid_power"
 CONF_GRID_IMPORT_POWER = "grid_import_power"
 CONF_GRID_EXPORT_POWER = "grid_export_power"
+CONF_GRID_IMPORT_ENERGY = "grid_import_energy"
+CONF_GRID_EXPORT_ENERGY = "grid_export_energy"
+CONF_SOLAR_ENERGY = "solar_energy"
+CONF_LOAD_ENERGY = "load_energy"
 CONF_BATTERY_POWER = "battery_power"
 CONF_BATTERY_CHARGE_POWER = "battery_charge_power"
 CONF_BATTERY_DISCHARGE_POWER = "battery_discharge_power"
+CONF_BATTERY_CHARGE_ENERGY = "battery_charge_energy"
+CONF_BATTERY_DISCHARGE_ENERGY = "battery_discharge_energy"
 CONF_BATTERY_SOC = "battery_soc"
 
 CONF_SIDEBAR_TITLE = "sidebar_title"
@@ -103,8 +109,14 @@ DEFAULT_SENSORS = {
     CONF_BATTERY_SOC: "sensor.ems_battery_soc",
     CONF_GRID_IMPORT_POWER: None,
     CONF_GRID_EXPORT_POWER: None,
+    CONF_GRID_IMPORT_ENERGY: None,
+    CONF_GRID_EXPORT_ENERGY: None,
+    CONF_SOLAR_ENERGY: None,
+    CONF_LOAD_ENERGY: None,
     CONF_BATTERY_CHARGE_POWER: None,
     CONF_BATTERY_DISCHARGE_POWER: None,
+    CONF_BATTERY_CHARGE_ENERGY: None,
+    CONF_BATTERY_DISCHARGE_ENERGY: None,
 }
 
 DEFAULT_PRICE_SENSORS = {

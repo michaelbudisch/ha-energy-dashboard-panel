@@ -1,12 +1,18 @@
 const FALLBACK_SENSORS = {
   solar_power: "sensor.ems_solar_power",
+  solar_energy: null,
   load_power: null,
+  load_energy: null,
   grid_power: "sensor.ems_grid_power",
   grid_import_power: null,
   grid_export_power: null,
+  grid_import_energy: null,
+  grid_export_energy: null,
   battery_power: "sensor.ems_battery_power",
   battery_charge_power: null,
   battery_discharge_power: null,
+  battery_charge_energy: null,
+  battery_discharge_energy: null,
   battery_soc: "sensor.ems_battery_soc",
 };
 
@@ -158,6 +164,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
     this._priceHoverIndex = null;
+    this._detailOpen = false;
+    this._detailKey = null;
+    this._detailHoverIndex = null;
     this._priceChartRows = [];
     this._priceChartRangeStart = null;
     this._priceChartRangeEnd = null;
@@ -291,6 +300,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
     this._priceHoverIndex = null;
+    this._detailOpen = false;
+    this._detailKey = null;
+    this._detailHoverIndex = null;
     this._priceChartRows = [];
     this._lastHassSignature = "";
     this._cachedAutoPriceEntity = null;
@@ -428,6 +440,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       this._drawTrendMixChart();
       this._drawSavingsChart();
       this._drawPriceChart();
+      this._drawDetailChart();
     });
   }
 
@@ -450,7 +463,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const trendMix = this.shadowRoot?.querySelector("#trend-mix-canvas");
     const savings = this.shadowRoot?.querySelector("#savings-canvas");
     const price = this.shadowRoot?.querySelector("#price-canvas");
-    const observed = [trend, trendMix, savings, price].filter(Boolean);
+    const detail = this.shadowRoot?.querySelector("#detail-canvas");
+    const observed = [trend, trendMix, savings, price, detail].filter(Boolean);
     if (observed.length === 0) {
       return;
     }
@@ -553,6 +567,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
             this._savingsHoverIndex = idx;
             this._scheduleChartRedraw();
           }
+        } else if (type === "detail") {
+          if (this._detailHoverIndex !== idx) {
+            this._detailHoverIndex = idx;
+            this._scheduleChartRedraw();
+          }
         } else if (this._priceHoverIndex !== idx) {
           this._priceHoverIndex = idx;
           this._scheduleChartRedraw();
@@ -568,6 +587,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
         } else if (type === "savings") {
           if (this._savingsHoverIndex !== null) {
             this._savingsHoverIndex = null;
+            this._scheduleChartRedraw();
+          }
+        } else if (type === "detail") {
+          if (this._detailHoverIndex !== null) {
+            this._detailHoverIndex = null;
             this._scheduleChartRedraw();
           }
         } else if (this._priceHoverIndex !== null) {
@@ -588,6 +612,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
     bindOne(this.shadowRoot?.querySelector("#price-canvas"), "price", {
       left: 34,
       right: 10,
+    });
+    bindOne(this.shadowRoot?.querySelector("#detail-canvas"), "detail", {
+      left: 56,
+      right: 24,
     });
   }
 
@@ -644,6 +672,478 @@ class HaEnergyDashboardPanel extends HTMLElement {
       ctx.fillText(String(line || ""), boxX + padX, boxY + padY + 12 + idx * lineHeight);
     });
     ctx.restore();
+  }
+
+  _detailChipConfigs(extraChips = this._extraChips()) {
+    const configs = {
+      solar_power: {
+        key: "solar_power",
+        title: "PV / Solar",
+        subtitle: "Leistung und Ertrag",
+        icon: "mdi:white-balance-sunny",
+        color: "#25b788",
+        mode: "solar_positive",
+      },
+      grid_power: {
+        key: "grid_power",
+        title: "Netz",
+        subtitle: "Bezug und Einspeisung",
+        icon: "mdi:transmission-tower",
+        color: "#8da3ba",
+        mode: "grid_signed",
+      },
+      battery_power: {
+        key: "battery_power",
+        title: "Batterie",
+        subtitle: "Laden und Entladen",
+        icon: "mdi:battery",
+        color: "#4f8dff",
+        mode: "battery_signed",
+      },
+      load_power: {
+        key: "load_power",
+        title: "Hauslast Netto",
+        subtitle: "Verbrauch im Haus",
+        icon: "mdi:home-lightning-bolt-outline",
+        color: "#f29b38",
+        mode: "load_positive",
+      },
+    };
+    if (Array.isArray(extraChips)) {
+      extraChips.forEach((chip) => {
+        if (!chip?.key) {
+          return;
+        }
+        configs[chip.key] = {
+          key: chip.key,
+          title: chip.label || chip.key,
+          subtitle: "Zusätzlicher Verbraucher",
+          icon: "mdi:flash",
+          color: CHIP_CABLE_COLORS[chip.accent] || "#9b7de3",
+          mode: "extra_positive",
+        };
+      });
+    }
+    return configs;
+  }
+
+  _detailConfigForKey(key, extraChips = this._extraChips()) {
+    if (!key) {
+      return null;
+    }
+    const configs = this._detailChipConfigs(extraChips);
+    return configs[key] || null;
+  }
+
+  _openDetailView(key, extraChips = this._extraChips()) {
+    const cfg = this._detailConfigForKey(key, extraChips);
+    if (!cfg) {
+      return;
+    }
+    this._detailOpen = true;
+    this._detailKey = cfg.key;
+    this._detailHoverIndex = null;
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _closeDetailView() {
+    if (!this._detailOpen && !this._detailKey) {
+      return;
+    }
+    this._detailOpen = false;
+    this._detailKey = null;
+    this._detailHoverIndex = null;
+    this._requestRender({ immediate: true, full: true });
+  }
+
+  _detailCurrentPower(detailKey, liveSnapshot = {}, extraChips = this._extraChips()) {
+    if (!detailKey) {
+      return null;
+    }
+    if (detailKey === "solar_power") {
+      return liveSnapshot.solar ?? null;
+    }
+    if (detailKey === "grid_power") {
+      return liveSnapshot.grid ?? null;
+    }
+    if (detailKey === "battery_power") {
+      return liveSnapshot.battery ?? null;
+    }
+    if (detailKey === "load_power") {
+      return liveSnapshot.houseLoad ?? null;
+    }
+    const chips = Array.isArray(extraChips) ? extraChips : [];
+    const chip = chips.find((entry) => entry?.key === detailKey);
+    return chip ? chip.power ?? null : null;
+  }
+
+  _detailSeriesForConfig(cfg, trendData = this._trendData) {
+    const empty = {
+      points: [],
+      values: [],
+      stepHours: TREND_STEP_MIN_MS / (60 * 60 * 1000),
+      signed: false,
+    };
+    if (!cfg || !trendData || !Array.isArray(trendData.points) || trendData.points.length === 0) {
+      return empty;
+    }
+    const stepMs = Math.max(TREND_STEP_MIN_MS, Number(trendData.stepMs) || TREND_STEP_MIN_MS);
+    const stepHours = stepMs / (60 * 60 * 1000);
+    const points = trendData.points;
+    const signed = cfg.mode === "grid_signed" || cfg.mode === "battery_signed";
+
+    const values = points.map((point) => {
+      if (!point || typeof point !== "object") {
+        return null;
+      }
+      if (cfg.mode === "solar_positive") {
+        const val = point.solarPower ?? point.solarCover;
+        return Number.isFinite(val) ? Math.max(0, Number(val) || 0) : null;
+      }
+      if (cfg.mode === "load_positive") {
+        const val = point.houseNetPower ?? point.load;
+        return Number.isFinite(val) ? Math.max(0, Number(val) || 0) : null;
+      }
+      if (cfg.mode === "grid_signed") {
+        const direct = point.gridSignedPower;
+        if (Number.isFinite(direct)) {
+          return Number(direct);
+        }
+        const hasImport = point.gridImportPower !== null && point.gridImportPower !== undefined;
+        const hasExport = point.gridExportPower !== null && point.gridExportPower !== undefined;
+        if (!hasImport && !hasExport) {
+          return null;
+        }
+        const importPower = Number.isFinite(point.gridImportPower) ? Number(point.gridImportPower) : 0;
+        const exportPower = Number.isFinite(point.gridExportPower) ? Number(point.gridExportPower) : 0;
+        return importPower - exportPower;
+      }
+      if (cfg.mode === "battery_signed") {
+        const direct = point.batterySignedPower;
+        if (Number.isFinite(direct)) {
+          return Number(direct);
+        }
+        const hasDischarge =
+          point.batteryDischargePower !== null && point.batteryDischargePower !== undefined;
+        const hasCharge = point.batteryChargePower !== null && point.batteryChargePower !== undefined;
+        if (!hasDischarge && !hasCharge) {
+          return null;
+        }
+        const dischargePower = Number.isFinite(point.batteryDischargePower)
+          ? Number(point.batteryDischargePower)
+          : 0;
+        const chargePower = Number.isFinite(point.batteryChargePower)
+          ? Number(point.batteryChargePower)
+          : 0;
+        return dischargePower - chargePower;
+      }
+      const val = point.extraPowers?.[cfg.key];
+      return Number.isFinite(val) ? Math.max(0, Number(val) || 0) : null;
+    });
+
+    return { points, values, stepHours, signed };
+  }
+
+  _detailStatsForConfig(cfg, detailSeries, currentPower = null) {
+    const stats = [];
+    if (!cfg || !detailSeries) {
+      return stats;
+    }
+    const values = Array.isArray(detailSeries.values) ? detailSeries.values : [];
+    const stepHours = Number(detailSeries.stepHours) || TREND_STEP_MIN_MS / (60 * 60 * 1000);
+    const valid = values.filter((value) => value !== null && value !== undefined && Number.isFinite(value));
+    const count = valid.length;
+
+    const add = (label, value) => {
+      stats.push({ label, value });
+    };
+
+    add("Aktuell", this._formatPower(currentPower));
+    if (count === 0) {
+      add("Energie", "--");
+      add("Peak", "--");
+      add("Ø Leistung", "--");
+      return stats;
+    }
+
+    const positive = valid.map((value) => Math.max(0, Number(value) || 0));
+    const negative = valid.map((value) => Math.max(0, -(Number(value) || 0)));
+
+    const posKwh = positive.reduce((sum, value) => sum + (value * stepHours) / 1000, 0);
+    const negKwh = negative.reduce((sum, value) => sum + (value * stepHours) / 1000, 0);
+    const netKwh = valid.reduce((sum, value) => sum + ((Number(value) || 0) * stepHours) / 1000, 0);
+    const peakPos = positive.length > 0 ? Math.max(...positive) : 0;
+    const peakNeg = negative.length > 0 ? Math.max(...negative) : 0;
+    const avgAbsW =
+      valid.length > 0
+        ? valid.reduce((sum, value) => sum + Math.abs(Number(value) || 0), 0) / valid.length
+        : 0;
+
+    if (cfg.mode === "grid_signed") {
+      add("Bezug", this._formatEnergyKwh(posKwh));
+      add("Einspeisung", this._formatEnergyKwh(negKwh));
+      add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
+      add("Peak Bezug", this._formatPower(peakPos));
+      add("Peak Einspeisung", this._formatPower(-peakNeg));
+      add("Ø Fluss", this._formatPower(avgAbsW));
+      return stats;
+    }
+
+    if (cfg.mode === "battery_signed") {
+      add("Entladen", this._formatEnergyKwh(posKwh));
+      add("Laden", this._formatEnergyKwh(negKwh));
+      add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
+      add("Peak Entladen", this._formatPower(peakPos));
+      add("Peak Laden", this._formatPower(-peakNeg));
+      add("Ø Fluss", this._formatPower(avgAbsW));
+      return stats;
+    }
+
+    const totalKwh = posKwh;
+    const peakW = positive.length > 0 ? Math.max(...positive) : 0;
+    const avgW = positive.length > 0 ? positive.reduce((sum, value) => sum + value, 0) / positive.length : 0;
+    const activeHours = positive.filter((value) => value > 1).length * stepHours;
+    add("Energie", this._formatEnergyKwh(totalKwh));
+    add("Peak", this._formatPower(peakW));
+    add("Ø Leistung", this._formatPower(avgW));
+    add("Aktive Zeit", `${activeHours.toFixed(activeHours >= 10 ? 1 : 2)} h`);
+    return stats;
+  }
+
+  _detailModalHTML(liveSnapshot, extraChips = this._extraChips()) {
+    if (!this._detailOpen || !this._detailKey) {
+      return "";
+    }
+    const cfg = this._detailConfigForKey(this._detailKey, extraChips);
+    if (!cfg) {
+      return "";
+    }
+    const detailSeries = this._detailSeriesForConfig(cfg, this._trendData);
+    const currentPower = this._detailCurrentPower(cfg.key, liveSnapshot, extraChips);
+    const stats = this._detailStatsForConfig(cfg, detailSeries, currentPower);
+    const rangeLabel = this._trendData?.rangeLabel || this._trendWindow().label;
+    const signed =
+      cfg.mode === "grid_signed" || cfg.mode === "battery_signed";
+    const directionHint =
+      cfg.mode === "grid_signed"
+        ? "Positiv = Netzbezug · Negativ = Einspeisung"
+        : cfg.mode === "battery_signed"
+          ? "Positiv = Entladen · Negativ = Laden"
+          : "Positiv = Leistungsaufnahme/Erzeugung";
+
+    return `
+      <div class="detail-overlay" data-action="close-detail-overlay">
+        <section class="detail-dialog" role="dialog" aria-modal="true" aria-label="Chip Details">
+          <header class="settings-head">
+            <div class="settings-title icon-label">
+              <ha-icon icon="${cfg.icon}"></ha-icon>
+              <span>${this._escapeHtml(cfg.title)}</span>
+            </div>
+            <button class="btn ghost" data-action="close-detail">Schließen</button>
+          </header>
+          <div class="detail-meta">
+            <div>${this._escapeHtml(cfg.subtitle)} · Zeitraum: <b>${this._escapeHtml(rangeLabel)}</b></div>
+            <div>${signed ? "Signed Ansicht" : "Leistungsansicht"} · ${this._escapeHtml(directionHint)}</div>
+          </div>
+          <div class="detail-chart-wrap">
+            <canvas id="detail-canvas"></canvas>
+          </div>
+          <div class="detail-kpis">
+            ${stats
+              .map(
+                (item) => `
+                  <article class="card">
+                    <div class="k">${this._escapeHtml(item.label)}</div>
+                    <div class="v">${this._escapeHtml(item.value)}</div>
+                  </article>
+                `
+              )
+              .join("")}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  _drawDetailChart() {
+    const canvas = this.shadowRoot?.querySelector("#detail-canvas");
+    if (!canvas) {
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      return;
+    }
+    const cfg = this._detailConfigForKey(this._detailKey);
+    const detailSeries = this._detailSeriesForConfig(cfg, this._trendData);
+    const points = detailSeries.points;
+    const values = detailSeries.values;
+    if (!cfg || !Array.isArray(points) || points.length < 2 || !Array.isArray(values)) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+      ctx.font = "12px Sora, Segoe UI, sans-serif";
+      ctx.fillText(this._trendLoading ? "Lade Detaildaten..." : "Keine Detaildaten", 12, 20);
+      return;
+    }
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth || 760;
+    const cssHeight = canvas.clientHeight || 236;
+    canvas.width = Math.floor(cssWidth * dpr);
+    canvas.height = Math.floor(cssHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssWidth, cssHeight);
+
+    const pad = { left: 56, right: 24, top: 16, bottom: 24 };
+    const w = cssWidth - pad.left - pad.right;
+    const h = cssHeight - pad.top - pad.bottom;
+    const valid = values
+      .map((value) => (value === null || value === undefined || !Number.isFinite(value) ? null : Number(value)))
+      .filter((value) => value !== null);
+
+    if (valid.length < 2 || w <= 10 || h <= 10) {
+      ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+      ctx.font = "12px Sora, Segoe UI, sans-serif";
+      ctx.fillText("Zu wenige Detaildaten", 12, 20);
+      return;
+    }
+
+    const signed = Boolean(detailSeries.signed);
+    const maxPos = Math.max(0, ...valid.map((value) => Math.max(0, value)));
+    const minNeg = Math.min(0, ...valid.map((value) => Math.min(0, value)));
+    const hasNegative = signed && minNeg < -0.001;
+    const peakAbs = hasNegative
+      ? Math.max(1, maxPos, Math.abs(minNeg))
+      : Math.max(1, maxPos);
+    const xAt = (i, n) => pad.left + (i / Math.max(1, n - 1)) * w;
+    const yAt = (value) => {
+      const v = Number(value) || 0;
+      if (hasNegative) {
+        return pad.top + ((peakAbs - v) / (2 * peakAbs)) * h;
+      }
+      return pad.top + h - (Math.max(0, v) / peakAbs) * h;
+    };
+    const baselineY = hasNegative ? yAt(0) : pad.top + h;
+
+    ctx.strokeStyle = this._themeDark ? "rgba(149, 171, 193, 0.18)" : "rgba(37, 60, 78, 0.14)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i += 1) {
+      const y = pad.top + (h / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(pad.left + w, y);
+      ctx.stroke();
+    }
+    if (hasNegative) {
+      ctx.strokeStyle = this._themeDark ? "rgba(168, 186, 205, 0.45)" : "rgba(53, 75, 96, 0.34)";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, baselineY);
+      ctx.lineTo(pad.left + w, baselineY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    const yTopLabel = hasNegative ? this._formatPower(peakAbs) : this._formatPower(peakAbs);
+    const yBottomLabel = hasNegative ? this._formatPower(-peakAbs) : this._formatPower(0);
+    ctx.fillStyle = this._themeDark ? "#9eb4c8" : "#6f8090";
+    ctx.font = "11px Sora, Segoe UI, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(yTopLabel, pad.left - 6, pad.top + 10);
+    ctx.fillText(yBottomLabel, pad.left - 6, pad.top + h);
+    if (hasNegative) {
+      ctx.fillText(this._formatPower(0), pad.left - 6, baselineY + 4);
+    }
+    ctx.textAlign = "left";
+    ctx.fillText(this._trendData?.startLabel || "", pad.left, pad.top + h + 16);
+    ctx.textAlign = "right";
+    ctx.fillText(this._trendData?.endLabel || "", pad.left + w, pad.top + h + 16);
+
+    ctx.beginPath();
+    let areaStarted = false;
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value === null || value === undefined || !Number.isFinite(value)) {
+        if (areaStarted) {
+          const prevX = xAt(i - 1, values.length);
+          ctx.lineTo(prevX, baselineY);
+          ctx.closePath();
+          areaStarted = false;
+        }
+        continue;
+      }
+      const x = xAt(i, values.length);
+      const y = yAt(value);
+      if (!areaStarted) {
+        ctx.moveTo(x, baselineY);
+        ctx.lineTo(x, y);
+        areaStarted = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    if (areaStarted) {
+      ctx.lineTo(xAt(values.length - 1, values.length), baselineY);
+      ctx.closePath();
+    }
+    ctx.fillStyle = `${cfg.color}2A`;
+    ctx.fill();
+
+    ctx.beginPath();
+    let moved = false;
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value === null || value === undefined || !Number.isFinite(value)) {
+        moved = false;
+        continue;
+      }
+      const x = xAt(i, values.length);
+      const y = yAt(value);
+      if (!moved) {
+        ctx.moveTo(x, y);
+        moved = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.strokeStyle = cfg.color;
+    ctx.lineWidth = 2.2;
+    ctx.setLineDash([]);
+    ctx.stroke();
+
+    const hoverIdx = this._detailHoverIndex;
+    if (hoverIdx !== null && hoverIdx >= 0 && hoverIdx < values.length) {
+      const value = values[hoverIdx];
+      const point = points[hoverIdx];
+      if (value !== null && value !== undefined && Number.isFinite(value) && point?.t) {
+        const x = xAt(hoverIdx, values.length);
+        const y = yAt(value);
+        ctx.strokeStyle = this._themeDark ? "rgba(164, 188, 214, 0.48)" : "rgba(39, 58, 77, 0.42)";
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, pad.top + h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.fillStyle = cfg.color;
+        ctx.arc(x, y, 3.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = this._themeDark ? "rgba(22, 33, 48, 0.9)" : "rgba(255, 255, 255, 0.9)";
+        ctx.stroke();
+
+        const intervalKwh = (Math.abs(value) * detailSeries.stepHours) / 1000;
+        const lines = [
+          `Zeit: ${this._formatTime(point.t)}`,
+          `Leistung: ${this._formatPower(value)}`,
+          `Intervall: ${this._formatEnergyKwh(intervalKwh)}`,
+        ];
+        this._drawCanvasTooltip(ctx, lines, x, y, cssWidth, cssHeight);
+      }
+    }
   }
 
   _uiConfigStorageKey() {
@@ -830,6 +1330,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
           this._positions = null;
           this._trendHoverIndex = null;
           this._savingsHoverIndex = null;
+          this._detailHoverIndex = null;
           this._trendKey = null;
           this._trendData = null;
           this._trendCache.clear();
@@ -1242,6 +1743,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._positions = null;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._detailHoverIndex = null;
+    this._detailOpen = false;
+    this._detailKey = null;
     this._trendKey = null;
     this._trendData = null;
     this._trendCache.clear();
@@ -1264,6 +1768,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._positions = null;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._detailHoverIndex = null;
+    this._detailOpen = false;
+    this._detailKey = null;
     this._trendKey = null;
     this._trendData = null;
     this._trendCache.clear();
@@ -1357,8 +1864,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
           }
           <form id="settings-form" class="settings-form" onsubmit="return false;">
             <section class="settings-block">
-              <h4>Allgemein</h4>
-              <div class="settings-note">Tibber Token gesetzt: <strong>${draft?.tibber_token_configured ? "Ja" : "Nein"}</strong> · Speicherung im HA Backend. Sidebar-Titel links kommt aus YAML (<code>sidebar_title</code>) und wird nicht live geändert.</div>
+              <h4>Allgemeine Einstellungen</h4>
+              <div class="settings-note">Sidebar-Titel links kommt aus YAML (<code>sidebar_title</code>) und wird nicht live geändert.</div>
               <div class="settings-grid">
                 ${this._settingsInputRow({
                   label: "Dashboard Titel (intern)",
@@ -1385,108 +1892,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
                   value: draft?.weather_location || "",
                   placeholder: "Berlin,DE",
                 })}
-                ${this._settingsInputRow({
-                  label: "Tibber API Token",
-                  name: "tibber_api_token",
-                  value: "",
-                  inputType: "password",
-                  placeholder: "nur eintragen, wenn ändern",
-                })}
-                ${this._settingsInputRow({
-                  label: "Tibber Home ID (optional)",
-                  name: "tibber_home_id",
-                  value: draft?.tibber_home_id || "",
-                  placeholder: "optional_home_id",
-                })}
-                ${this._settingsInputRow({
-                  label: "Akku Kapazität (kWh)",
-                  name: "battery_capacity_kwh",
-                  value: draft?.battery_capacity_kwh || "",
-                  placeholder: "z.B. 10.2",
-                })}
-                ${this._settingsInputRow({
-                  label: "Akku Reserve SOC (%)",
-                  name: "battery_reserve_soc",
-                  value: draft?.battery_reserve_soc || "10",
-                  placeholder: "10",
-                })}
-                ${this._settingsInputRow({
-                  label: "Akku Max Lade-SOC (%)",
-                  name: "battery_max_charge_soc",
-                  value: draft?.battery_max_charge_soc || "100",
-                  placeholder: "100",
-                })}
-                ${this._settingsInputRow({
-                  label: "Tibber Token löschen",
-                  name: "tibber_clear_token",
-                  kind: "checkbox",
-                  checked: false,
-                })}
-                ${this._settingsInputRow({
-                  label: "Preis Entity",
-                  name: "price_entity",
-                  value: draft?.price_entity || "",
-                  listId: "edp-entity-options",
-                  placeholder: "sensor.dein_preis",
-                })}
-                ${this._settingsInputRow({
-                  label: "Preis Fallback Entity",
-                  name: "price_fallback_entity",
-                  value: draft?.price_fallback_entity || "",
-                  listId: "edp-entity-options",
-                  placeholder: "sensor.dein_preis_fallback",
-                })}
               </div>
-            </section>
-
-            <section class="settings-block">
-              <h4>Sensor Modi</h4>
-              <div class="settings-grid settings-grid-tight">
-                ${this._settingsInputRow({
-                  label: "Grid Sensor Modus",
-                  name: "grid_sensor_mode",
-                  kind: "select",
-                  value: draft?.grid_sensor_mode || "auto",
-                  options: [
-                    { value: "auto", label: "auto" },
-                    { value: "signed", label: "signed" },
-                    { value: "dual", label: "dual" },
-                  ],
-                })}
-                ${this._settingsInputRow({
-                  label: "Batterie Sensor Modus",
-                  name: "battery_sensor_mode",
-                  kind: "select",
-                  value: draft?.battery_sensor_mode || "auto",
-                  options: [
-                    { value: "auto", label: "auto" },
-                    { value: "signed", label: "signed" },
-                    { value: "dual", label: "dual" },
-                  ],
-                })}
-                ${this._settingsInputRow({
-                  label: "Signed Batterie nutzen",
-                  name: "use_signed_battery_power",
-                  kind: "checkbox",
-                  checked: Boolean(draft?.use_signed_battery_power),
-                })}
-                ${this._settingsInputRow({
-                  label: "Batterie Vorzeichen invertieren",
-                  name: "invert_battery_power_sign",
-                  kind: "checkbox",
-                  checked: Boolean(draft?.invert_battery_power_sign),
-                })}
-                ${this._settingsInputRow({
-                  label: "Load Vorzeichen invertieren",
-                  name: "invert_load_power_sign",
-                  kind: "checkbox",
-                  checked: Boolean(draft?.invert_load_power_sign),
-                })}
-              </div>
-            </section>
-
-            <section class="settings-block">
-              <h4>Standard Chip Farben</h4>
+              <div class="settings-note settings-subtitle"><b>Standard Chip Farben</b></div>
               <div class="settings-grid settings-grid-tight">
                 ${this._settingsInputRow({
                   label: "Solar Chip",
@@ -1517,25 +1924,56 @@ class HaEnergyDashboardPanel extends HTMLElement {
                   options: chipColorOptions,
                 })}
               </div>
+              <div class="settings-note settings-subtitle"><b>Extra Chips (JSON)</b></div>
+              <label class="settings-row">
+                <span>Array aus key/label/entity/accent</span>
+                <textarea
+                  name="extra_chips_json"
+                  rows="6"
+                  spellcheck="false"
+                >${this._escapeHtml(draft?.extra_chips_json || "[]")}</textarea>
+              </label>
             </section>
 
             <section class="settings-block">
-              <h4>Sensor Mapping</h4>
+              <h4>Tibber Einstellungen</h4>
+              <div class="settings-note">Tibber Token gesetzt: <strong>${draft?.tibber_token_configured ? "Ja" : "Nein"}</strong> · Speicherung im HA Backend.</div>
               <div class="settings-grid">
-                ${this._settingsInputRow({ label: "solar_power", name: "sensor_solar_power", value: sensors.solar_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "load_power", name: "sensor_load_power", value: sensors.load_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "grid_power", name: "sensor_grid_power", value: sensors.grid_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "grid_import_power", name: "sensor_grid_import_power", value: sensors.grid_import_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "grid_export_power", name: "sensor_grid_export_power", value: sensors.grid_export_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "battery_power", name: "sensor_battery_power", value: sensors.battery_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "battery_charge_power", name: "sensor_battery_charge_power", value: sensors.battery_charge_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "battery_discharge_power", name: "sensor_battery_discharge_power", value: sensors.battery_discharge_power || "", listId: "edp-sensor-options" })}
-                ${this._settingsInputRow({ label: "battery_soc", name: "sensor_battery_soc", value: sensors.battery_soc || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({
+                  label: "Tibber API Token",
+                  name: "tibber_api_token",
+                  value: "",
+                  inputType: "password",
+                  placeholder: "nur eintragen, wenn ändern",
+                })}
+                ${this._settingsInputRow({
+                  label: "Tibber Home ID (optional)",
+                  name: "tibber_home_id",
+                  value: draft?.tibber_home_id || "",
+                  placeholder: "optional_home_id",
+                })}
+                ${this._settingsInputRow({
+                  label: "Preis Entity",
+                  name: "price_entity",
+                  value: draft?.price_entity || "",
+                  listId: "edp-entity-options",
+                  placeholder: "sensor.dein_preis",
+                })}
+                ${this._settingsInputRow({
+                  label: "Preis Fallback Entity",
+                  name: "price_fallback_entity",
+                  value: draft?.price_fallback_entity || "",
+                  listId: "edp-entity-options",
+                  placeholder: "sensor.dein_preis_fallback",
+                })}
+                ${this._settingsInputRow({
+                  label: "Tibber Token löschen",
+                  name: "tibber_clear_token",
+                  kind: "checkbox",
+                  checked: false,
+                })}
               </div>
-            </section>
-
-            <section class="settings-block">
-              <h4>Preis Sensoren (optional)</h4>
+              <div class="settings-note settings-subtitle"><b>Preis Sensoren (optional)</b></div>
               <div class="settings-grid">
                 ${this._settingsInputRow({ label: "current", name: "price_current", value: priceSensors.current || "", listId: "edp-sensor-options" })}
                 ${this._settingsInputRow({ label: "next_1h", name: "price_next_1h", value: priceSensors.next_1h || "", listId: "edp-sensor-options" })}
@@ -1550,15 +1988,109 @@ class HaEnergyDashboardPanel extends HTMLElement {
             </section>
 
             <section class="settings-block">
-              <h4>Extra Chips (JSON)</h4>
-              <label class="settings-row">
-                <span>Array aus key/label/entity/accent</span>
-                <textarea
-                  name="extra_chips_json"
-                  rows="6"
-                  spellcheck="false"
-                >${this._escapeHtml(draft?.extra_chips_json || "[]")}</textarea>
-              </label>
+              <h4>Netz Einstellungen</h4>
+              <div class="settings-grid settings-grid-tight">
+                ${this._settingsInputRow({
+                  label: "Grid Sensor Modus",
+                  name: "grid_sensor_mode",
+                  kind: "select",
+                  value: draft?.grid_sensor_mode || "auto",
+                  options: [
+                    { value: "auto", label: "auto" },
+                    { value: "signed", label: "signed" },
+                    { value: "dual", label: "dual" },
+                  ],
+                })}
+                ${this._settingsInputRow({
+                  label: "Load Vorzeichen invertieren",
+                  name: "invert_load_power_sign",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.invert_load_power_sign),
+                })}
+              </div>
+              <div class="settings-note settings-subtitle"><b>Leistungssensoren (W)</b></div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Netz Zwei-Wege Leistung signed (grid_power)", name: "sensor_grid_power", value: sensors.grid_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Netzbezug Leistung (grid_import_power)", name: "sensor_grid_import_power", value: sensors.grid_import_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Netzeinspeisung Leistung (grid_export_power)", name: "sensor_grid_export_power", value: sensors.grid_export_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Gesamtlast Leistung (load_power, optional)", name: "sensor_load_power", value: sensors.load_power || "", listId: "edp-sensor-options" })}
+              </div>
+              <div class="settings-note settings-subtitle"><b>Energiezähler (kWh, optional aber bevorzugt)</b></div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Netzbezug gesamt (grid_import_energy)", name: "sensor_grid_import_energy", value: sensors.grid_import_energy || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Netzeinspeisung gesamt (grid_export_energy)", name: "sensor_grid_export_energy", value: sensors.grid_export_energy || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Gesamtlast Energie (load_energy)", name: "sensor_load_energy", value: sensors.load_energy || "", listId: "edp-sensor-options" })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Solar Einstellungen</h4>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Solar Leistung (solar_power)", name: "sensor_solar_power", value: sensors.solar_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "PV Erzeugung gesamt (solar_energy)", name: "sensor_solar_energy", value: sensors.solar_energy || "", listId: "edp-sensor-options" })}
+              </div>
+            </section>
+
+            <section class="settings-block">
+              <h4>Batterie Einstellungen</h4>
+              <div class="settings-grid settings-grid-tight">
+                ${this._settingsInputRow({
+                  label: "Batterie Sensor Modus",
+                  name: "battery_sensor_mode",
+                  kind: "select",
+                  value: draft?.battery_sensor_mode || "auto",
+                  options: [
+                    { value: "auto", label: "auto" },
+                    { value: "signed", label: "signed" },
+                    { value: "dual", label: "dual" },
+                  ],
+                })}
+                ${this._settingsInputRow({
+                  label: "Signed Batterie nutzen",
+                  name: "use_signed_battery_power",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.use_signed_battery_power),
+                })}
+                ${this._settingsInputRow({
+                  label: "Batterie Vorzeichen invertieren",
+                  name: "invert_battery_power_sign",
+                  kind: "checkbox",
+                  checked: Boolean(draft?.invert_battery_power_sign),
+                })}
+              </div>
+              <div class="settings-note settings-subtitle"><b>Kapazität & Ziele</b></div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({
+                  label: "Akku Kapazität (kWh)",
+                  name: "battery_capacity_kwh",
+                  value: draft?.battery_capacity_kwh || "",
+                  placeholder: "z.B. 10.2",
+                })}
+                ${this._settingsInputRow({
+                  label: "Akku Reserve SOC (%)",
+                  name: "battery_reserve_soc",
+                  value: draft?.battery_reserve_soc || "10",
+                  placeholder: "10",
+                })}
+                ${this._settingsInputRow({
+                  label: "Akku Max Lade-SOC (%)",
+                  name: "battery_max_charge_soc",
+                  value: draft?.battery_max_charge_soc || "100",
+                  placeholder: "100",
+                })}
+              </div>
+              <div class="settings-note settings-subtitle"><b>Leistungssensoren (W)</b></div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Batterie Leistung signed (battery_power)", name: "sensor_battery_power", value: sensors.battery_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Batterie Laden Leistung (battery_charge_power)", name: "sensor_battery_charge_power", value: sensors.battery_charge_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Batterie Entladen Leistung (battery_discharge_power)", name: "sensor_battery_discharge_power", value: sensors.battery_discharge_power || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Batterie SOC (%) (battery_soc)", name: "sensor_battery_soc", value: sensors.battery_soc || "", listId: "edp-sensor-options" })}
+              </div>
+              <div class="settings-note settings-subtitle"><b>Energiezähler (kWh, optional)</b></div>
+              <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Batterie Laden Energie (battery_charge_energy)", name: "sensor_battery_charge_energy", value: sensors.battery_charge_energy || "", listId: "edp-sensor-options" })}
+                ${this._settingsInputRow({ label: "Batterie Entladen Energie (battery_discharge_energy)", name: "sensor_battery_discharge_energy", value: sensors.battery_discharge_energy || "", listId: "edp-sensor-options" })}
+              </div>
             </section>
           </form>
           <footer class="settings-actions">
@@ -2096,6 +2628,34 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return Number.isFinite(scale) && scale > 0 ? scale : 1;
   }
 
+  _seriesEnergyKwh(entityId, rawValue) {
+    if (!entityId || rawValue === null || rawValue === undefined) {
+      return null;
+    }
+    const unit = this._stateObj(entityId)?.attributes?.unit_of_measurement;
+    return this._energyToKwh(rawValue, unit, entityId);
+  }
+
+  _counterDeltaKwh(prevKwh, nextKwh) {
+    if (
+      prevKwh === null ||
+      prevKwh === undefined ||
+      nextKwh === null ||
+      nextKwh === undefined
+    ) {
+      return null;
+    }
+    const delta = Number(nextKwh) - Number(prevKwh);
+    if (!Number.isFinite(delta)) {
+      return null;
+    }
+    // Ignore meter resets/rollovers for one interval and continue from next value.
+    if (delta < -0.001) {
+      return null;
+    }
+    return Math.max(0, delta);
+  }
+
   _formatPower(value) {
     if (value === null) {
       return "--";
@@ -2555,6 +3115,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._trendData = null;
     this._trendHoverIndex = null;
     this._savingsHoverIndex = null;
+    this._detailHoverIndex = null;
     this._requestRender({ immediate: true, full: true });
   }
 
@@ -3294,7 +3855,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
     );
   }
 
-  _buildTrendKey(sensors, windowCfg, priceCfg = null, gridSignedEntityId = null) {
+  _buildTrendKey(
+    sensors,
+    windowCfg,
+    priceCfg = null,
+    gridSignedEntityId = null,
+    extraEntityIds = []
+  ) {
     const flowOpts = this._flowOptions();
     const stepForBucket = Math.max(
       TREND_STEP_MIN_MS,
@@ -3306,12 +3873,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
       Math.floor(windowCfg.startMs / (60 * 60 * 1000)),
       endBucket,
       sensors.solar_power || "-",
+      sensors.solar_energy || "-",
       sensors.load_power || "-",
+      sensors.load_energy || "-",
       sensors.grid_import_power || "-",
       sensors.grid_export_power || "-",
+      sensors.grid_import_energy || "-",
+      sensors.grid_export_energy || "-",
       gridSignedEntityId || sensors.grid_power || TIBBER_LIVE_GRID_SENSOR,
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_charge_power || "-",
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_discharge_power || "-",
+      sensors.battery_charge_energy || "-",
+      sensors.battery_discharge_energy || "-",
       sensors.battery_power || "-",
       flowOpts.useSignedBatteryPower ? "1" : "0",
       flowOpts.gridSensorMode || "auto",
@@ -3320,6 +3893,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
       flowOpts.invertLoadPowerSign ? "1" : "0",
       priceCfg?.entityId || "-",
       priceCfg?.unit || "-",
+      Array.isArray(extraEntityIds) && extraEntityIds.length > 0
+        ? [...new Set(extraEntityIds.filter(Boolean))].sort().join(",")
+        : "-",
     ].join("|");
   }
 
@@ -3401,7 +3977,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return this._formatTime(ts);
   }
 
-  _buildTrendData(seriesMap, sensors, windowCfg, priceCfg = null, gridSignedEntityId = null) {
+  _buildTrendData(
+    seriesMap,
+    sensors,
+    windowCfg,
+    priceCfg = null,
+    gridSignedEntityId = null,
+    extraChips = []
+  ) {
     const start = windowCfg.startMs;
     const end = windowCfg.endMs;
     const stepMs = windowCfg.stepMs;
@@ -3409,12 +3992,24 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const flowOpts = this._flowOptions();
 
     const solarSeries = seriesMap[sensors.solar_power] || [];
+    const solarEnergySeries = sensors.solar_energy
+      ? seriesMap[sensors.solar_energy] || []
+      : [];
     const loadSeries = seriesMap[sensors.load_power] || [];
+    const loadEnergySeries = sensors.load_energy
+      ? seriesMap[sensors.load_energy] || []
+      : [];
     const gridImportSeries = sensors.grid_import_power
       ? seriesMap[sensors.grid_import_power] || []
       : [];
     const gridExportSeries = sensors.grid_export_power
       ? seriesMap[sensors.grid_export_power] || []
+      : [];
+    const gridImportEnergySeries = sensors.grid_import_energy
+      ? seriesMap[sensors.grid_import_energy] || []
+      : [];
+    const gridExportEnergySeries = sensors.grid_export_energy
+      ? seriesMap[sensors.grid_export_energy] || []
       : [];
     const gridSignedCandidates = [
       gridSignedEntityId,
@@ -3437,8 +4032,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const batteryChargeSeries = sensors.battery_charge_power
       ? seriesMap[sensors.battery_charge_power] || []
       : [];
+    const batteryChargeEnergySeries = sensors.battery_charge_energy
+      ? seriesMap[sensors.battery_charge_energy] || []
+      : [];
     const batteryDischargeSeries = sensors.battery_discharge_power
       ? seriesMap[sensors.battery_discharge_power] || []
+      : [];
+    const batteryDischargeEnergySeries = sensors.battery_discharge_energy
+      ? seriesMap[sensors.battery_discharge_energy] || []
       : [];
     const batterySignedSeries = sensors.battery_power
       ? seriesMap[sensors.battery_power] || []
@@ -3455,14 +4056,29 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const scaleBatterySigned = this._powerScale(sensors.battery_power);
 
     const readSolar = this._seriesReader(solarSeries);
+    const readSolarEnergy = this._seriesReader(solarEnergySeries);
     const readLoad = this._seriesReader(loadSeries);
+    const readLoadEnergy = this._seriesReader(loadEnergySeries);
     const readGridImport = this._seriesReader(gridImportSeries);
     const readGridExport = this._seriesReader(gridExportSeries);
+    const readGridImportEnergy = this._seriesReader(gridImportEnergySeries);
+    const readGridExportEnergy = this._seriesReader(gridExportEnergySeries);
     const readGridSigned = this._seriesReader(gridSignedSeries);
     const readBatteryCharge = this._seriesReader(batteryChargeSeries);
+    const readBatteryChargeEnergy = this._seriesReader(batteryChargeEnergySeries);
     const readBatteryDischarge = this._seriesReader(batteryDischargeSeries);
+    const readBatteryDischargeEnergy = this._seriesReader(batteryDischargeEnergySeries);
     const readBatterySigned = this._seriesReader(batterySignedSeries);
     const readPrice = this._seriesReader(priceSeries);
+    const extraSeriesReaders = Array.isArray(extraChips)
+      ? extraChips
+          .filter((chip) => chip?.key && chip?.entity)
+          .map((chip) => ({
+            key: chip.key,
+            scale: this._powerScale(chip.entity),
+            read: this._seriesReader(seriesMap[chip.entity] || []),
+          }))
+      : [];
 
     const points = [];
     let sumLoad = 0;
@@ -3485,6 +4101,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
     let batteryGridPoolCostEur = 0;
     let smartCumEur = 0;
     let smartCumHasValue = false;
+    let prevSolarMeterKwh = null;
+    let prevLoadMeterKwh = null;
+    let prevGridImportMeterKwh = null;
+    let prevGridExportMeterKwh = null;
+    let prevBatteryChargeMeterKwh = null;
+    let prevBatteryDischargeMeterKwh = null;
 
     for (let t = start; t <= end; t += stepMs) {
       const solarRawHist = readSolar(t);
@@ -3507,11 +4129,66 @@ class HaEnergyDashboardPanel extends HTMLElement {
         batterySignedRawHist === null ? null : batterySignedRawHist * scaleBatterySigned;
       const priceRaw = readPrice(t);
       const priceEur = this._priceToEur(priceRaw, priceCfg?.unit || "€/kWh");
-      const solar = solarRaw === null ? null : Math.max(0, solarRaw);
-      let load =
-        loadRaw === null
+      const solarEnergyRawHist = readSolarEnergy(t);
+      const loadEnergyRawHist = readLoadEnergy(t);
+      const batteryChargeEnergyRawHist = readBatteryChargeEnergy(t);
+      const batteryDischargeEnergyRawHist = readBatteryDischargeEnergy(t);
+      const solarMeterKwh = this._seriesEnergyKwh(sensors.solar_energy, solarEnergyRawHist);
+      const loadMeterKwh = this._seriesEnergyKwh(sensors.load_energy, loadEnergyRawHist);
+      const batteryChargeMeterKwh = this._seriesEnergyKwh(
+        sensors.battery_charge_energy,
+        batteryChargeEnergyRawHist
+      );
+      const batteryDischargeMeterKwh = this._seriesEnergyKwh(
+        sensors.battery_discharge_energy,
+        batteryDischargeEnergyRawHist
+      );
+      const solarMeterDeltaKwh = this._counterDeltaKwh(prevSolarMeterKwh, solarMeterKwh);
+      const loadMeterDeltaKwh = this._counterDeltaKwh(prevLoadMeterKwh, loadMeterKwh);
+      const batteryChargeMeterDeltaKwh = this._counterDeltaKwh(
+        prevBatteryChargeMeterKwh,
+        batteryChargeMeterKwh
+      );
+      const batteryDischargeMeterDeltaKwh = this._counterDeltaKwh(
+        prevBatteryDischargeMeterKwh,
+        batteryDischargeMeterKwh
+      );
+      if (solarMeterKwh !== null) {
+        prevSolarMeterKwh = solarMeterKwh;
+      }
+      if (loadMeterKwh !== null) {
+        prevLoadMeterKwh = loadMeterKwh;
+      }
+      if (batteryChargeMeterKwh !== null) {
+        prevBatteryChargeMeterKwh = batteryChargeMeterKwh;
+      }
+      if (batteryDischargeMeterKwh !== null) {
+        prevBatteryDischargeMeterKwh = batteryDischargeMeterKwh;
+      }
+      const solarMeterPower =
+        solarMeterDeltaKwh === null ? null : (solarMeterDeltaKwh * 1000) / stepHours;
+      const loadMeterPower =
+        loadMeterDeltaKwh === null ? null : (loadMeterDeltaKwh * 1000) / stepHours;
+      const batteryChargeMeterPower =
+        batteryChargeMeterDeltaKwh === null
           ? null
-          : Math.max(0, flowOpts.invertLoadPowerSign ? -loadRaw : loadRaw);
+          : (batteryChargeMeterDeltaKwh * 1000) / stepHours;
+      const batteryDischargeMeterPower =
+        batteryDischargeMeterDeltaKwh === null
+          ? null
+          : (batteryDischargeMeterDeltaKwh * 1000) / stepHours;
+      let solar =
+        solarMeterPower === null
+          ? solarRaw === null
+            ? null
+            : Math.max(0, solarRaw)
+          : Math.max(0, solarMeterPower);
+      let load =
+        loadMeterPower === null
+          ? loadRaw === null
+            ? null
+            : Math.max(0, flowOpts.invertLoadPowerSign ? -loadRaw : loadRaw)
+          : Math.max(0, loadMeterPower);
 
       const gridFlow = this._resolveGridFlowValues(
         {
@@ -3531,17 +4208,72 @@ class HaEnergyDashboardPanel extends HTMLElement {
         },
         flowOpts
       );
-      const batteryCharge = Math.max(0, batteryFlow.chargePower ?? 0);
-      const batteryDischarge = Math.max(0, batteryFlow.dischargePower ?? 0);
+      const batteryCharge = Math.max(
+        0,
+        batteryChargeMeterPower === null
+          ? batteryFlow.chargePower ?? 0
+          : batteryChargeMeterPower
+      );
+      const batteryDischarge = Math.max(
+        0,
+        batteryDischargeMeterPower === null
+          ? batteryFlow.dischargePower ?? 0
+          : batteryDischargeMeterPower
+      );
+      const gridImportEnergyRawHist = readGridImportEnergy(t);
+      const gridExportEnergyRawHist = readGridExportEnergy(t);
+      const gridImportMeterKwh = this._seriesEnergyKwh(
+        sensors.grid_import_energy,
+        gridImportEnergyRawHist
+      );
+      const gridExportMeterKwh = this._seriesEnergyKwh(
+        sensors.grid_export_energy,
+        gridExportEnergyRawHist
+      );
+      const gridImportMeterDeltaKwh = this._counterDeltaKwh(
+        prevGridImportMeterKwh,
+        gridImportMeterKwh
+      );
+      const gridExportMeterDeltaKwh = this._counterDeltaKwh(
+        prevGridExportMeterKwh,
+        gridExportMeterKwh
+      );
+      if (gridImportMeterKwh !== null) {
+        prevGridImportMeterKwh = gridImportMeterKwh;
+      }
+      if (gridExportMeterKwh !== null) {
+        prevGridExportMeterKwh = gridExportMeterKwh;
+      }
+      const gridImportMeterPower =
+        gridImportMeterDeltaKwh === null ? null : (gridImportMeterDeltaKwh * 1000) / stepHours;
+      const gridExportMeterPower =
+        gridExportMeterDeltaKwh === null ? null : (gridExportMeterDeltaKwh * 1000) / stepHours;
+      const signedGridFromEnergyMeters =
+        gridImportMeterPower === null && gridExportMeterPower === null
+          ? null
+          : Math.max(0, gridImportMeterPower ?? 0) - Math.max(0, gridExportMeterPower ?? 0);
+      const gridImportTotalPower =
+        gridImportMeterPower === null ? gridImport : Math.max(0, gridImportMeterPower);
 
       const point = {
         t,
         load: null,
+        loadTotalPower: null,
+        houseNetPower: null,
+        loadToBatteryPower: null,
         renewable: null,
         autarky: null,
         solarCover: null,
         batteryCover: null,
         gridCover: null,
+        solarPower: null,
+        gridSignedPower: null,
+        gridImportPower: null,
+        gridExportPower: null,
+        batterySignedPower: null,
+        batteryChargePower: null,
+        batteryDischargePower: null,
+        extraPowers: {},
         saveSolarEur: null,
         saveArbitrageEur: null,
         saveSmartEur: null,
@@ -3551,8 +4283,30 @@ class HaEnergyDashboardPanel extends HTMLElement {
       if (load === null) {
         load = this._deriveLoadFromInputs({
           solarPower: solar,
-          gridSignedPower: gridFlow.signed,
-          batteryDischargePower: batteryFlow.dischargePower,
+          gridSignedPower: gridFlow.signed ?? signedGridFromEnergyMeters,
+          batteryDischargePower: batteryDischarge,
+        });
+      }
+
+      point.solarPower = solar === null ? null : Math.max(0, solar);
+      point.gridSignedPower =
+        gridFlow.signed === null || gridFlow.signed === undefined
+          ? signedGridFromEnergyMeters
+          : gridFlow.signed;
+      point.gridImportPower =
+        gridImportMeterPower === null ? gridImport : Math.max(0, gridImportMeterPower);
+      point.gridExportPower =
+        gridExportMeterPower === null
+          ? Math.max(0, gridFlow.exportPower ?? 0)
+          : Math.max(0, gridExportMeterPower);
+      point.batterySignedPower = batteryFlow.signed;
+      point.batteryChargePower = batteryCharge;
+      point.batteryDischargePower = batteryDischarge;
+      if (extraSeriesReaders.length > 0) {
+        extraSeriesReaders.forEach((entry) => {
+          const raw = entry.read(t);
+          const power = raw === null ? null : Math.max(0, raw * entry.scale);
+          point.extraPowers[entry.key] = power;
         });
       }
 
@@ -3561,23 +4315,47 @@ class HaEnergyDashboardPanel extends HTMLElement {
         continue;
       }
       const houseNet = Math.max(0, load - batteryCharge);
+      let solarCover = solar === null ? 0 : Math.min(load, Math.max(0, solar));
+      let batteryCover = Math.min(Math.max(0, load - solarCover), batteryDischarge);
+      let gridCover = Math.max(0, load - solarCover - batteryCover);
 
-      const renew = Math.max(0, load - (gridImport ?? 0));
+      const meterGridCover =
+        gridImportMeterPower === null
+          ? null
+          : this._clamp(Math.max(0, gridImportMeterPower), 0, load);
+      if (meterGridCover !== null) {
+        const localTarget = Math.max(0, load - meterGridCover);
+        const localCurrent = Math.max(0, solarCover + batteryCover);
+        if (localCurrent > 0) {
+          const factor = localTarget / localCurrent;
+          solarCover *= factor;
+          batteryCover *= factor;
+        } else {
+          solarCover = Math.min(localTarget, Math.max(0, solar ?? 0));
+          batteryCover = Math.max(0, localTarget - solarCover);
+        }
+        gridCover = meterGridCover;
+      }
+
+      batteryCover = this._clamp(batteryCover, 0, batteryDischarge);
+      solarCover = this._clamp(solarCover, 0, Math.max(0, load - batteryCover));
+      gridCover = Math.max(0, load - solarCover - batteryCover);
+
+      const renew = Math.max(0, load - gridCover);
       const autarky =
-        houseNet > 0 && gridImport !== null
-          ? this._clamp((1 - gridImport / houseNet) * 100, 0, 100)
+        houseNet > 0
+          ? this._clamp((1 - this._clamp(gridCover, 0, houseNet) / houseNet) * 100, 0, 100)
           : null;
 
       point.load = load;
+      point.loadTotalPower = load;
+      point.houseNetPower = houseNet;
+      point.loadToBatteryPower = batteryCharge;
       point.renewable = renew;
       point.autarky = autarky;
-      const solarCover = solar === null ? 0 : Math.min(load, Math.max(0, solar));
-      const batteryCover = Math.min(Math.max(0, load - solarCover), batteryDischarge);
-      const gridCover = Math.max(0, load - solarCover - batteryCover);
       point.solarCover = solarCover;
       point.batteryCover = batteryCover;
       point.gridCover = gridCover;
-
       sumLoad += load;
       sumRenewable += renew;
       if (autarky !== null) {
@@ -3589,16 +4367,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
         priceIntervals += 1;
         let stepSolarEur = 0;
         let stepArbitrageEur = 0;
+        const gridToHousePower = this._clamp(gridCover, 0, houseNet);
+        const nonGridToHousePower = Math.max(0, houseNet - gridToHousePower);
+        savedNonGridEur += (nonGridToHousePower * stepHours / 1000) * priceEur;
+        nonGridPricedIntervals += 1;
 
-        if (gridImport !== null) {
-          const gridToHouse = this._clamp(gridImport, 0, houseNet);
-          const nonGridToHousePower = Math.max(0, houseNet - gridToHouse);
-          savedNonGridEur += (nonGridToHousePower * stepHours / 1000) * priceEur;
-          nonGridPricedIntervals += 1;
-        }
-
-        if (solar !== null) {
-          const solarToHousePower = Math.min(houseNet, solar);
+        if (solarCover > 0) {
+          const solarToHousePower = Math.min(houseNet, solarCover);
           const solarStepEur = (solarToHousePower * stepHours / 1000) * priceEur;
           savedSolarDirectEur += solarStepEur;
           stepSolarEur += solarStepEur;
@@ -3607,12 +4382,30 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         let gridToBatteryPower = 0;
         if (batteryCharge > 0) {
+          const estGridToBatteryByMeter =
+            gridImportTotalPower === null
+              ? null
+              : Math.max(0, gridImportTotalPower - gridToHousePower);
           if (solar !== null) {
             const solarSurplus = Math.max(0, solar - houseNet);
             const solarToBattery = Math.min(batteryCharge, solarSurplus);
-            gridToBatteryPower = Math.max(0, batteryCharge - solarToBattery);
+            const residualChargeNeed = Math.max(0, batteryCharge - solarToBattery);
+            if (estGridToBatteryByMeter !== null) {
+              gridToBatteryPower = this._clamp(
+                estGridToBatteryByMeter,
+                0,
+                residualChargeNeed
+              );
+            } else {
+              gridToBatteryPower = residualChargeNeed;
+            }
+          } else if (estGridToBatteryByMeter !== null) {
+            gridToBatteryPower = this._clamp(estGridToBatteryByMeter, 0, batteryCharge);
           } else if (gridImport !== null) {
-            gridToBatteryPower = Math.min(batteryCharge, Math.max(0, gridImport));
+            gridToBatteryPower = Math.min(
+              batteryCharge,
+              Math.max(0, gridImport - gridToHousePower)
+            );
           }
         }
 
@@ -3808,16 +4601,33 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return history;
   }
 
-  _trendEntitiesForFetch(sensors, priceCfg = null, flowOpts = this._flowOptions()) {
+  _trendEntitiesForFetch(
+    sensors,
+    priceCfg = null,
+    flowOpts = this._flowOptions(),
+    extraEntityIds = []
+  ) {
     const entities = [sensors.load_power];
     if (sensors.solar_power) {
       entities.push(sensors.solar_power);
+    }
+    if (sensors.solar_energy) {
+      entities.push(sensors.solar_energy);
+    }
+    if (sensors.load_energy) {
+      entities.push(sensors.load_energy);
     }
     if (sensors.grid_import_power) {
       entities.push(sensors.grid_import_power);
     }
     if (sensors.grid_export_power) {
       entities.push(sensors.grid_export_power);
+    }
+    if (sensors.grid_import_energy) {
+      entities.push(sensors.grid_import_energy);
+    }
+    if (sensors.grid_export_energy) {
+      entities.push(sensors.grid_export_energy);
     }
     if (sensors.grid_power) {
       entities.push(sensors.grid_power);
@@ -3831,11 +4641,20 @@ class HaEnergyDashboardPanel extends HTMLElement {
     if (!flowOpts.useSignedBatteryPower && sensors.battery_discharge_power) {
       entities.push(sensors.battery_discharge_power);
     }
+    if (sensors.battery_charge_energy) {
+      entities.push(sensors.battery_charge_energy);
+    }
+    if (sensors.battery_discharge_energy) {
+      entities.push(sensors.battery_discharge_energy);
+    }
     if (sensors.battery_power) {
       entities.push(sensors.battery_power);
     }
     if (priceCfg?.entityId) {
       entities.push(priceCfg.entityId);
+    }
+    if (Array.isArray(extraEntityIds) && extraEntityIds.length > 0) {
+      entities.push(...extraEntityIds.filter(Boolean));
     }
     return [...new Set(entities.filter(Boolean))];
   }
@@ -3845,13 +4664,23 @@ class HaEnergyDashboardPanel extends HTMLElement {
     windowCfg,
     priceCfg = null,
     signedGridEntityId = null,
-    force = false
+    force = false,
+    extraChips = []
   ) {
     if (!this._hass?.callApi) {
       throw new Error("History API nicht verfügbar");
     }
 
-    const key = this._buildTrendKey(sensors, windowCfg, priceCfg, signedGridEntityId);
+    const extraEntityIds = Array.isArray(extraChips)
+      ? extraChips.map((chip) => chip?.entity).filter(Boolean)
+      : [];
+    const key = this._buildTrendKey(
+      sensors,
+      windowCfg,
+      priceCfg,
+      signedGridEntityId,
+      extraEntityIds
+    );
     const now = Date.now();
     if (!force) {
       const cached = this._trendCache.get(key);
@@ -3863,7 +4692,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const uniqEntities = this._trendEntitiesForFetch(
       sensors,
       priceCfg,
-      this._flowOptions()
+      this._flowOptions(),
+      extraEntityIds
     );
     if (uniqEntities.length === 0) {
       throw new Error("Keine Verlauf-Entitäten verfügbar");
@@ -3877,7 +4707,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
         sensors,
         windowCfg,
         priceCfg,
-        signedGridEntityId
+        signedGridEntityId,
+        extraChips
       );
       this._setTrendCache(key, trend, Date.now());
       return trend;
@@ -3896,7 +4727,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
           sensors,
           windowCfg,
           priceCfg,
-          signedGridEntityId
+          signedGridEntityId,
+          extraChips
         );
         this._setTrendCache(key, trend, Date.now());
         return trend;
@@ -4261,7 +5093,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const priceCfg = this._trendPriceConfig();
     const signedGridSource = this._resolveGridSignedSource(sensors);
     const signedGridEntityId = signedGridSource.entityId;
-    const key = this._buildTrendKey(sensors, windowCfg, priceCfg, signedGridEntityId);
+    const extraChips = this._extraChips();
+    const extraEntityIds = extraChips.map((chip) => chip?.entity).filter(Boolean);
+    const key = this._buildTrendKey(
+      sensors,
+      windowCfg,
+      priceCfg,
+      signedGridEntityId,
+      extraEntityIds
+    );
     const now = Date.now();
 
     const cached = this._trendCache.get(key);
@@ -4279,36 +5119,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
       return;
     }
 
-    const entities = [sensors.load_power];
-    if (sensors.solar_power) {
-      entities.push(sensors.solar_power);
-    }
-    if (sensors.grid_import_power) {
-      entities.push(sensors.grid_import_power);
-    }
-    if (sensors.grid_export_power) {
-      entities.push(sensors.grid_export_power);
-    }
-    if (sensors.grid_power) {
-      entities.push(sensors.grid_power);
-    }
-    if (this._stateObj(TIBBER_LIVE_GRID_SENSOR) || !sensors.grid_power) {
-      entities.push(TIBBER_LIVE_GRID_SENSOR);
-    }
-    if (!flowOpts.useSignedBatteryPower && sensors.battery_charge_power) {
-      entities.push(sensors.battery_charge_power);
-    }
-    if (!flowOpts.useSignedBatteryPower && sensors.battery_discharge_power) {
-      entities.push(sensors.battery_discharge_power);
-    }
-    if (sensors.battery_power) {
-      entities.push(sensors.battery_power);
-    }
-    if (priceCfg.entityId) {
-      entities.push(priceCfg.entityId);
-    }
-
-    const uniqEntities = [...new Set(entities.filter(Boolean))];
+    const uniqEntities = this._trendEntitiesForFetch(
+      sensors,
+      priceCfg,
+      flowOpts,
+      extraEntityIds
+    );
     if (uniqEntities.length === 0) {
       return;
     }
@@ -4325,7 +5141,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
         sensors,
         windowCfg,
         priceCfg,
-        signedGridEntityId
+        signedGridEntityId,
+        extraChips
       );
       this._trendLastFetch = Date.now();
       this._setTrendCache(key, this._trendData, this._trendLastFetch);
@@ -4346,7 +5163,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
             sensors,
             windowCfg,
             priceCfg,
-            signedGridEntityId
+            signedGridEntityId,
+            extraChips
           );
           this._trendLastFetch = Date.now();
           this._setTrendCache(key, this._trendData, this._trendLastFetch);
@@ -5819,7 +6637,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const compactClass = inlineMeta ? "compact" : "";
     return `
       <div
-        class="chip ${accent} ${compactClass} ${this._editMode ? "editable" : ""}"
+        class="chip ${accent} ${compactClass} ${this._editMode ? "editable" : "clickable"}"
         data-key="${key}"
         style="left:${pos.x}%; top:${pos.y}%;"
       >
@@ -5975,6 +6793,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
     this._setBoundText("trend-mix-autarky", trendMix.available ? this._formatPercent(trendMix.autarkyPct) : "--");
     this._drawTrendMixChart();
     this._drawPriceChart();
+    if (this._detailOpen) {
+      this._drawDetailChart();
+    }
   }
 
   _bindInteractions() {
@@ -5992,6 +6813,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const reportRefreshBtn = this.shadowRoot.querySelector("[data-action='report-refresh']");
     const reportExportCsvBtn = this.shadowRoot.querySelector("[data-action='report-export-csv']");
     const reportExportPdfBtn = this.shadowRoot.querySelector("[data-action='report-export-pdf']");
+    const detailOverlay = this.shadowRoot.querySelector("[data-action='close-detail-overlay']");
+    const closeDetailBtns = this.shadowRoot.querySelectorAll("[data-action='close-detail']");
 
     toggleBtn?.addEventListener("click", () => {
       this._editMode = !this._editMode;
@@ -6058,6 +6881,16 @@ class HaEnergyDashboardPanel extends HTMLElement {
     reportExportPdfBtn?.addEventListener("click", () => {
       this._exportReportPdf();
     });
+    detailOverlay?.addEventListener("click", (ev) => {
+      if (ev.target === detailOverlay) {
+        this._closeDetailView();
+      }
+    });
+    closeDetailBtns.forEach((btn) =>
+      btn.addEventListener("click", () => {
+        this._closeDetailView();
+      })
+    );
 
     this.shadowRoot.querySelectorAll("[data-action='trend-range']").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -6086,19 +6919,22 @@ class HaEnergyDashboardPanel extends HTMLElement {
       });
     });
 
-    if (!this._editMode) {
-      return;
-    }
-
-    this.shadowRoot.querySelectorAll(".chip.editable").forEach((chip) => {
-      chip.addEventListener("pointerdown", (ev) => {
+    this.shadowRoot.querySelectorAll(".chip[data-key]").forEach((chip) => {
+      const key = chip.dataset.key;
+      if (!key) {
+        return;
+      }
+      if (this._editMode) {
+        chip.addEventListener("pointerdown", (ev) => {
+          ev.preventDefault();
+          this._drag = { key };
+          chip.setPointerCapture?.(ev.pointerId);
+        });
+        return;
+      }
+      chip.addEventListener("click", (ev) => {
         ev.preventDefault();
-        const key = chip.dataset.key;
-        if (!key) {
-          return;
-        }
-        this._drag = { key };
-        chip.setPointerCapture?.(ev.pointerId);
+        this._openDetailView(key);
       });
     });
   }
@@ -6215,6 +7051,11 @@ class HaEnergyDashboardPanel extends HTMLElement {
         power: chip.power,
         color: chip.cableColor,
       }));
+    if (this._detailOpen && this._detailKey && !this._detailConfigForKey(this._detailKey, extraChips)) {
+      this._detailOpen = false;
+      this._detailKey = null;
+      this._detailHoverIndex = null;
+    }
     const loadToBattery = batteryCharge;
     const houseLoad =
       loadTotal === null ? null : Math.max(0, loadTotal - (loadToBattery ?? 0));
@@ -6793,6 +7634,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
           color: var(--ed-muted);
         }
 
+        .settings-subtitle {
+          margin: 8px 0 6px 0;
+          font-weight: 600;
+        }
+
+        .settings-subtitle:first-of-type {
+          margin-top: 0;
+        }
+
         .settings-note code {
           font-size: 0.7rem;
           border-radius: 6px;
@@ -6896,6 +7746,79 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .panel.theme-dark .report-dialog {
           background: linear-gradient(180deg, rgba(19, 29, 43, 0.97), rgba(15, 24, 36, 0.95));
           border-color: rgba(149, 171, 193, 0.3);
+        }
+
+        .detail-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 53;
+          background: rgba(8, 14, 22, 0.58);
+          display: flex;
+          justify-content: center;
+          align-items: flex-start;
+          padding: 16px;
+          overflow: auto;
+        }
+
+        .detail-dialog {
+          width: min(980px, 100%);
+          max-height: calc(100vh - 32px);
+          overflow: auto;
+          border-radius: 16px;
+          border: 1px solid var(--ed-border);
+          background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 250, 255, 0.93));
+          box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+          padding: 12px;
+        }
+
+        .panel.theme-dark .detail-dialog {
+          background: linear-gradient(180deg, rgba(19, 29, 43, 0.97), rgba(15, 24, 36, 0.95));
+          border-color: rgba(149, 171, 193, 0.3);
+        }
+
+        .detail-meta {
+          margin-bottom: 10px;
+          color: var(--ed-muted);
+          font-size: 0.78rem;
+          display: grid;
+          gap: 2px;
+        }
+
+        .detail-chart-wrap {
+          border-radius: 12px;
+          border: 1px solid var(--ed-border);
+          background: rgba(255, 255, 255, 0.74);
+          padding: 8px;
+          margin-bottom: 10px;
+        }
+
+        .panel.theme-dark .detail-chart-wrap {
+          background: rgba(21, 33, 47, 0.74);
+        }
+
+        .detail-chart-wrap canvas {
+          width: 100%;
+          height: 236px;
+          display: block;
+        }
+
+        .detail-kpis {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 8px;
+        }
+
+        .detail-kpis .card {
+          margin-bottom: 0;
+          padding: 10px;
+          min-height: 58px;
+        }
+
+        .detail-kpis .card .k {
+          font-size: 0.66rem;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+          color: var(--ed-muted);
         }
 
         .report-controls {
@@ -7083,6 +8006,21 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
         .chip.editable:active {
           cursor: grabbing;
+        }
+
+        .chip.clickable {
+          cursor: pointer;
+          transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .chip.clickable:hover {
+          transform: translate(-50%, -50%) scale(1.03);
+          filter: saturate(1.08) brightness(1.04);
+          box-shadow: 0 14px 30px rgba(0, 0, 0, 0.34);
+        }
+
+        .chip.clickable:active {
+          transform: translate(-50%, -50%) scale(0.99);
         }
 
 
@@ -7883,13 +8821,15 @@ class HaEnergyDashboardPanel extends HTMLElement {
         .narrow .trend-title.icon-label ha-icon,
         .narrow .source-row .icon-label ha-icon { --mdc-icon-size: 11px; }
         .narrow .report-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .narrow .detail-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
         @media (max-width: 390px) {
           .narrow .block-status,
           .narrow .block-diag,
           .narrow .stats,
           .narrow .kpi-strip,
-          .narrow .report-kpis {
+          .narrow .report-kpis,
+          .narrow .detail-kpis {
             grid-template-columns: 1fr;
           }
         }
@@ -8283,15 +9223,21 @@ class HaEnergyDashboardPanel extends HTMLElement {
           <summary>Sensor Mapping</summary>
           <div class="map-grid">
             <div class="k">solar_power</div><div class="v">${sensors.solar_power}</div>
+            <div class="k">solar_energy</div><div class="v">${sensors.solar_energy || "-"}</div>
             <div class="k">grid_power</div><div class="v">${sensors.grid_power}</div>
             <div class="k">grid_power_tibber_fallback</div><div class="v">${TIBBER_LIVE_GRID_SENSOR}</div>
             <div class="k">grid_power_effektiv</div><div class="v">${gridFlow.signedEntityId || "-"}</div>
             <div class="k">grid_import</div><div class="v">${sensors.grid_import_power || "-"}</div>
             <div class="k">grid_export</div><div class="v">${sensors.grid_export_power || "-"}</div>
+            <div class="k">grid_import_energy</div><div class="v">${sensors.grid_import_energy || "-"}</div>
+            <div class="k">grid_export_energy</div><div class="v">${sensors.grid_export_energy || "-"}</div>
             <div class="k">battery_power</div><div class="v">${sensors.battery_power}</div>
             <div class="k">battery_charge</div><div class="v">${sensors.battery_charge_power || "-"}</div>
             <div class="k">battery_discharge</div><div class="v">${sensors.battery_discharge_power || "-"}</div>
             <div class="k">load_power</div><div class="v">${sensors.load_power}</div>
+            <div class="k">load_energy</div><div class="v">${sensors.load_energy || "-"}</div>
+            <div class="k">battery_charge_energy</div><div class="v">${sensors.battery_charge_energy || "-"}</div>
+            <div class="k">battery_discharge_energy</div><div class="v">${sensors.battery_discharge_energy || "-"}</div>
             <div class="k">battery_soc</div><div class="v">${sensors.battery_soc}</div>
             <div class="k">extra_chips</div><div class="v">${
               extraChips.length
@@ -8356,6 +9302,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">background</div><div class="v">${bgImage || "nicht gesetzt"}</div>
           </div>
         </details>
+        ${this._detailOpen ? this._detailModalHTML(liveModel, extraChips) : ""}
         ${this._reportOpen ? this._reportModalHTML() : ""}
         ${this._settingsOpen ? this._settingsModalHTML(settingsDraft, settingsOptions) : ""}
       </div>
@@ -8372,6 +9319,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         this._drawTrendMixChart();
         this._drawSavingsChart();
         this._drawPriceChart();
+        this._drawDetailChart();
       } catch (error) {
         this._renderFatalError(error);
       }
