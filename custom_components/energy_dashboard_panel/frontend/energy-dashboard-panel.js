@@ -9,6 +9,7 @@ const FALLBACK_SENSORS = {
   grid_import_energy: null,
   grid_export_energy: null,
   battery_power: "sensor.ems_battery_power",
+  battery_inverter_power: null,
   battery_charge_power: null,
   battery_discharge_power: null,
   battery_charge_energy: null,
@@ -131,7 +132,7 @@ const TREND_VALUE_MODES = {
   kwh: "kwh",
 };
 const TREND_STEP_MIN_MS = 15 * 60 * 1000;
-const TREND_DATA_REV = "2026-03-23-flow-split-2";
+const TREND_DATA_REV = "2026-03-23-battery-inverter-loss-1";
 
 const GRID_STATUS_ENTER_W = 80;
 const GRID_STATUS_EXIT_W = 50;
@@ -913,9 +914,29 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
     if (cfg.mode === "battery_signed") {
       const batteryToHouseKwh = integrateFieldKwh("batteryToHousePower", "batteryCover");
+      const batteryChargeAcKwh = integrateFieldKwh("batteryChargePower", null);
+      const batteryDischargeAcKwh = integrateFieldKwh("batteryDischargePower", null);
+      const batteryChargeDcKwh = integrateFieldKwh("batteryDcChargePower", null);
+      const batteryDischargeDcKwh = integrateFieldKwh("batteryDcDischargePower", null);
+      const batteryChargeLossKwh = integrateFieldKwh("batteryChargeLossPower", null);
+      const batteryDischargeLossKwh = integrateFieldKwh("batteryDischargeLossPower", null);
+      const batteryLossTotalKwh = Math.max(0, batteryChargeLossKwh + batteryDischargeLossKwh);
       add("Entladen", this._formatEnergyKwh(posKwh));
       add("Davon im Haus verbraucht", this._formatEnergyKwh(batteryToHouseKwh));
       add("Laden", this._formatEnergyKwh(negKwh));
+      if (batteryLossTotalKwh > 0.0005) {
+        add("Wandlungsverlust", this._formatEnergyKwh(batteryLossTotalKwh));
+        add("Davon Laden", this._formatEnergyKwh(batteryChargeLossKwh));
+        add("Davon Entladen", this._formatEnergyKwh(batteryDischargeLossKwh));
+      }
+      if (batteryChargeAcKwh > 0.01 && batteryChargeDcKwh > 0) {
+        const effChargePct = this._clamp((batteryChargeDcKwh / batteryChargeAcKwh) * 100, 0, 100);
+        add("Wirkungsgrad Laden", this._formatPercent(effChargePct));
+      }
+      if (batteryDischargeDcKwh > 0.01 && batteryDischargeAcKwh > 0) {
+        const effDischargePct = this._clamp((batteryDischargeAcKwh / batteryDischargeDcKwh) * 100, 0, 100);
+        add("Wirkungsgrad Entladen", this._formatPercent(effDischargePct));
+      }
       add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
       add("Peak Entladen", this._formatPower(peakPos));
       add("Peak Laden", this._formatPower(-peakNeg));
@@ -971,7 +992,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       cfg.mode === "grid_signed"
         ? "Positiv = Netzbezug gesamt · Negativ = Einspeisung"
         : cfg.mode === "battery_signed"
-          ? "Positiv = Entladen · Negativ = Laden"
+          ? "Positiv = Entladen (AC) · Negativ = Laden (AC)"
           : cfg.mode === "solar_positive"
             ? "Erzeugung gesamt (Hauslast-Anteil in Kennzahlen)"
           : "Positiv = Leistungsaufnahme/Erzeugung";
@@ -2126,6 +2147,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
               </div>
               <div class="settings-note settings-subtitle"><b>Leistungssensoren (W)</b></div>
               <div class="settings-grid">
+                ${this._settingsInputRow({ label: "Batterie WR Wirkleistung signed (battery_inverter_power)", name: "sensor_battery_inverter_power", value: sensors.battery_inverter_power || "", listId: "edp-sensor-options" })}
                 ${this._settingsInputRow({ label: "Batterie Leistung signed (battery_power)", name: "sensor_battery_power", value: sensors.battery_power || "", listId: "edp-sensor-options" })}
                 ${this._settingsInputRow({ label: "Batterie Laden Leistung (battery_charge_power)", name: "sensor_battery_charge_power", value: sensors.battery_charge_power || "", listId: "edp-sensor-options" })}
                 ${this._settingsInputRow({ label: "Batterie Entladen Leistung (battery_discharge_power)", name: "sensor_battery_discharge_power", value: sensors.battery_discharge_power || "", listId: "edp-sensor-options" })}
@@ -3795,6 +3817,35 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return flow;
   }
 
+  _resolveBatterySignedSource(sensors = this._sensors()) {
+    const inverterEntityId = sensors?.battery_inverter_power || null;
+    const inverterValue = this._numericPowerState(inverterEntityId);
+    if (inverterValue !== null) {
+      return {
+        entityId: inverterEntityId,
+        signedRaw: inverterValue,
+        source: "inverter",
+      };
+    }
+
+    const batteryEntityId = sensors?.battery_power || null;
+    const batteryValue = this._numericPowerState(batteryEntityId);
+    if (batteryValue !== null) {
+      return {
+        entityId: batteryEntityId,
+        signedRaw: batteryValue,
+        source: "battery",
+      };
+    }
+
+    const fallbackEntityId = inverterEntityId || batteryEntityId || null;
+    return {
+      entityId: fallbackEntityId,
+      signedRaw: null,
+      source: fallbackEntityId ? "configured_missing" : "missing",
+    };
+  }
+
   _resolveBatteryFlowValues(
     { signedRaw = null, chargeRaw = null, dischargeRaw = null },
     flowOpts = this._flowOptions()
@@ -3890,14 +3941,45 @@ class HaEnergyDashboardPanel extends HTMLElement {
   }
 
   _resolveBatteryFlow(sensors, flowOpts = this._flowOptions()) {
-    return this._resolveBatteryFlowValues(
+    const signedSource = this._resolveBatterySignedSource(sensors);
+    const batteryMode = this._normalizeSensorMode(flowOpts.batterySensorMode);
+    const effectiveFlowOpts =
+      batteryMode === "auto" && signedSource.source === "inverter"
+        ? {
+            ...flowOpts,
+            useSignedBatteryPower: true,
+          }
+        : flowOpts;
+    const flow = this._resolveBatteryFlowValues(
       {
-        signedRaw: this._numericPowerState(sensors.battery_power),
+        signedRaw: signedSource.signedRaw,
         chargeRaw: this._numericPowerState(sensors.battery_charge_power),
         dischargeRaw: this._numericPowerState(sensors.battery_discharge_power),
       },
-      flowOpts
+      effectiveFlowOpts
     );
+    flow.signedEntityId = signedSource.entityId;
+    flow.signedSource = signedSource.source;
+    return flow;
+  }
+
+  _resolveBatteryDcFlow(sensors, flowOpts = this._flowOptions()) {
+    const signedRaw = this._numericPowerState(sensors?.battery_power);
+    const flow = this._resolveBatteryFlowValues(
+      {
+        signedRaw,
+        chargeRaw: null,
+        dischargeRaw: null,
+      },
+      {
+        ...flowOpts,
+        batterySensorMode: "signed",
+        useSignedBatteryPower: true,
+      }
+    );
+    flow.signedEntityId = sensors?.battery_power || null;
+    flow.signedSource = sensors?.battery_power ? "battery_dc" : "missing";
+    return flow;
   }
 
   _buildTrendKey(
@@ -3905,6 +3987,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     windowCfg,
     priceCfg = null,
     gridSignedEntityId = null,
+    batterySignedEntityId = null,
     extraEntityIds = []
   ) {
     const flowOpts = this._flowOptions();
@@ -3927,10 +4010,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
       sensors.grid_import_energy || "-",
       sensors.grid_export_energy || "-",
       gridSignedEntityId || sensors.grid_power || TIBBER_LIVE_GRID_SENSOR,
+      batterySignedEntityId || sensors.battery_inverter_power || sensors.battery_power || "-",
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_charge_power || "-",
       flowOpts.useSignedBatteryPower ? "-" : sensors.battery_discharge_power || "-",
       sensors.battery_charge_energy || "-",
       sensors.battery_discharge_energy || "-",
+      sensors.battery_inverter_power || "-",
       sensors.battery_power || "-",
       flowOpts.useSignedBatteryPower ? "1" : "0",
       flowOpts.gridSensorMode || "auto",
@@ -4029,6 +4114,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     windowCfg,
     priceCfg = null,
     gridSignedEntityId = null,
+    batterySignedEntityId = null,
     extraChips = []
   ) {
     const start = windowCfg.startMs;
@@ -4090,6 +4176,24 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const batterySignedSeries = sensors.battery_power
       ? seriesMap[sensors.battery_power] || []
       : [];
+    const batterySignedCandidates = [
+      batterySignedEntityId,
+      sensors.battery_inverter_power,
+      sensors.battery_power,
+    ].filter((id, index, arr) => id && arr.indexOf(id) === index);
+    let batterySignedFlowSeries = [];
+    let batterySignedFlowScaleEntity = batterySignedCandidates[0] || null;
+    for (const entityId of batterySignedCandidates) {
+      const candidateSeries = seriesMap[entityId] || [];
+      if (candidateSeries.length > 0) {
+        batterySignedFlowSeries = candidateSeries;
+        batterySignedFlowScaleEntity = entityId;
+        break;
+      }
+    }
+    if (batterySignedFlowSeries.length === 0 && batterySignedFlowScaleEntity) {
+      batterySignedFlowSeries = seriesMap[batterySignedFlowScaleEntity] || [];
+    }
     const priceSeries = priceCfg?.entityId ? seriesMap[priceCfg.entityId] || [] : [];
 
     const scaleSolar = this._powerScale(sensors.solar_power);
@@ -4100,6 +4204,17 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const scaleBatteryCharge = this._powerScale(sensors.battery_charge_power);
     const scaleBatteryDischarge = this._powerScale(sensors.battery_discharge_power);
     const scaleBatterySigned = this._powerScale(sensors.battery_power);
+    const scaleBatterySignedFlow = this._powerScale(batterySignedFlowScaleEntity);
+    const batteryMode = this._normalizeSensorMode(flowOpts.batterySensorMode);
+    const effectiveBatteryFlowOpts =
+      batteryMode === "auto" &&
+      sensors.battery_inverter_power &&
+      batterySignedFlowScaleEntity === sensors.battery_inverter_power
+        ? {
+            ...flowOpts,
+            useSignedBatteryPower: true,
+          }
+        : flowOpts;
 
     const readSolar = this._seriesReader(solarSeries);
     const readSolarEnergy = this._seriesReader(solarEnergySeries);
@@ -4115,6 +4230,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const readBatteryDischarge = this._seriesReader(batteryDischargeSeries);
     const readBatteryDischargeEnergy = this._seriesReader(batteryDischargeEnergySeries);
     const readBatterySigned = this._seriesReader(batterySignedSeries);
+    const readBatterySignedFlow = this._seriesReader(batterySignedFlowSeries);
     const readPrice = this._seriesReader(priceSeries);
     const extraSeriesReaders = Array.isArray(extraChips)
       ? extraChips
@@ -4163,6 +4279,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const chargeDualHist = readBatteryCharge(t);
       const dischargeDualHist = readBatteryDischarge(t);
       const batterySignedRawHist = readBatterySigned(t);
+      const batterySignedFlowRawHist = readBatterySignedFlow(t);
 
       const solarRaw = solarRawHist === null ? null : solarRawHist * scaleSolar;
       const loadRaw = loadRawHist === null ? null : loadRawHist * scaleLoad;
@@ -4173,6 +4290,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const dischargeDual = dischargeDualHist === null ? null : dischargeDualHist * scaleBatteryDischarge;
       const batterySignedRaw =
         batterySignedRawHist === null ? null : batterySignedRawHist * scaleBatterySigned;
+      const batterySignedFlowRaw =
+        batterySignedFlowRawHist === null ? null : batterySignedFlowRawHist * scaleBatterySignedFlow;
       const priceRaw = readPrice(t);
       const priceEur = this._priceToEur(priceRaw, priceCfg?.unit || "€/kWh");
       const solarEnergyRawHist = readSolarEnergy(t);
@@ -4248,12 +4367,48 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
       const batteryFlow = this._resolveBatteryFlowValues(
         {
-          signedRaw: batterySignedRaw,
+          signedRaw: batterySignedFlowRaw,
           chargeRaw: chargeDual,
           dischargeRaw: dischargeDual,
         },
-        flowOpts
+        effectiveBatteryFlowOpts
       );
+      const batteryDcFlow = this._resolveBatteryFlowValues(
+        {
+          signedRaw: batterySignedRaw,
+          chargeRaw: null,
+          dischargeRaw: null,
+        },
+        {
+          ...flowOpts,
+          batterySensorMode: "signed",
+          useSignedBatteryPower: true,
+        }
+      );
+      const batteryChargeAc = Number.isFinite(batteryFlow.chargePower)
+        ? Math.max(0, Number(batteryFlow.chargePower))
+        : null;
+      const batteryDischargeAc = Number.isFinite(batteryFlow.dischargePower)
+        ? Math.max(0, Number(batteryFlow.dischargePower))
+        : null;
+      const batteryChargeDc = Number.isFinite(batteryDcFlow.chargePower)
+        ? Math.max(0, Number(batteryDcFlow.chargePower))
+        : null;
+      const batteryDischargeDc = Number.isFinite(batteryDcFlow.dischargePower)
+        ? Math.max(0, Number(batteryDcFlow.dischargePower))
+        : null;
+      const batteryChargeLoss =
+        batteryChargeAc === null || batteryChargeDc === null
+          ? null
+          : Math.max(0, batteryChargeAc - batteryChargeDc);
+      const batteryDischargeLoss =
+        batteryDischargeAc === null || batteryDischargeDc === null
+          ? null
+          : Math.max(0, batteryDischargeDc - batteryDischargeAc);
+      const batteryLossPower =
+        batteryChargeLoss === null && batteryDischargeLoss === null
+          ? null
+          : Math.max(0, (batteryChargeLoss ?? 0) + (batteryDischargeLoss ?? 0));
       const batteryCharge = Math.max(
         0,
         batteryChargeMeterPower === null
@@ -4322,8 +4477,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
         gridImportPower: null,
         gridExportPower: null,
         batterySignedPower: null,
+        batterySignedDcPower: null,
         batteryChargePower: null,
         batteryDischargePower: null,
+        batteryDcChargePower: null,
+        batteryDcDischargePower: null,
+        batteryLossPower: null,
+        batteryChargeLossPower: null,
+        batteryDischargeLossPower: null,
         extraPowers: {},
         saveSolarEur: null,
         saveArbitrageEur: null,
@@ -4351,8 +4512,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
           ? Math.max(0, gridFlow.exportPower ?? 0)
           : Math.max(0, gridExportMeterPower);
       point.batterySignedPower = batteryFlow.signed;
+      point.batterySignedDcPower = batteryDcFlow.signed;
       point.batteryChargePower = batteryCharge;
       point.batteryDischargePower = batteryDischarge;
+      point.batteryDcChargePower = batteryChargeDc;
+      point.batteryDcDischargePower = batteryDischargeDc;
+      point.batteryLossPower = batteryLossPower;
+      point.batteryChargeLossPower = batteryChargeLoss;
+      point.batteryDischargeLossPower = batteryDischargeLoss;
       if (extraSeriesReaders.length > 0) {
         extraSeriesReaders.forEach((entry) => {
           const raw = entry.read(t);
@@ -4679,6 +4846,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     sensors,
     priceCfg = null,
     flowOpts = this._flowOptions(),
+    batterySignedEntityId = null,
     extraEntityIds = []
   ) {
     const entities = [sensors.load_power];
@@ -4721,6 +4889,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
     if (sensors.battery_discharge_energy) {
       entities.push(sensors.battery_discharge_energy);
     }
+    if (batterySignedEntityId) {
+      entities.push(batterySignedEntityId);
+    }
+    if (sensors.battery_inverter_power) {
+      entities.push(sensors.battery_inverter_power);
+    }
     if (sensors.battery_power) {
       entities.push(sensors.battery_power);
     }
@@ -4738,6 +4912,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     windowCfg,
     priceCfg = null,
     signedGridEntityId = null,
+    signedBatteryEntityId = null,
     force = false,
     extraChips = []
   ) {
@@ -4753,6 +4928,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       windowCfg,
       priceCfg,
       signedGridEntityId,
+      signedBatteryEntityId,
       extraEntityIds
     );
     const now = Date.now();
@@ -4767,6 +4943,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       sensors,
       priceCfg,
       this._flowOptions(),
+      signedBatteryEntityId,
       extraEntityIds
     );
     if (uniqEntities.length === 0) {
@@ -4782,6 +4959,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         windowCfg,
         priceCfg,
         signedGridEntityId,
+        signedBatteryEntityId,
         extraChips
       );
       this._setTrendCache(key, trend, Date.now());
@@ -4802,6 +4980,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
           windowCfg,
           priceCfg,
           signedGridEntityId,
+          signedBatteryEntityId,
           extraChips
         );
         this._setTrendCache(key, trend, Date.now());
@@ -4898,12 +5077,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const sensors = this._sensors();
       const priceCfg = this._trendPriceConfig();
       const signedGridSource = this._resolveGridSignedSource(sensors);
+      const signedBatterySource = this._resolveBatterySignedSource(sensors);
       const windowCfg = this._reportWindow(period);
       const trendData = await this._fetchTrendDataForWindow(
         sensors,
         windowCfg,
         priceCfg,
         signedGridSource.entityId,
+        signedBatterySource.entityId,
         force
       );
       this._reportData = this._buildReportFromTrendData(trendData, windowCfg, period);
@@ -5167,6 +5348,8 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const priceCfg = this._trendPriceConfig();
     const signedGridSource = this._resolveGridSignedSource(sensors);
     const signedGridEntityId = signedGridSource.entityId;
+    const signedBatterySource = this._resolveBatterySignedSource(sensors);
+    const signedBatteryEntityId = signedBatterySource.entityId;
     const extraChips = this._extraChips();
     const extraEntityIds = extraChips.map((chip) => chip?.entity).filter(Boolean);
     const key = this._buildTrendKey(
@@ -5174,6 +5357,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       windowCfg,
       priceCfg,
       signedGridEntityId,
+      signedBatteryEntityId,
       extraEntityIds
     );
     const now = Date.now();
@@ -5197,6 +5381,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
       sensors,
       priceCfg,
       flowOpts,
+      signedBatteryEntityId,
       extraEntityIds
     );
     if (uniqEntities.length === 0) {
@@ -5216,6 +5401,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
         windowCfg,
         priceCfg,
         signedGridEntityId,
+        signedBatteryEntityId,
         extraChips
       );
       this._trendLastFetch = Date.now();
@@ -5238,6 +5424,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             windowCfg,
             priceCfg,
             signedGridEntityId,
+            signedBatteryEntityId,
             extraChips
           );
           this._trendLastFetch = Date.now();
@@ -6234,13 +6421,18 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const hasBatteryDual = Boolean(
       sensorMap.battery_charge_power || sensorMap.battery_discharge_power
     );
+    const hasBatterySigned = Boolean(
+      sensorMap.battery_inverter_power || sensorMap.battery_power
+    );
     const useSignedBattery = flowOpts.useSignedBatteryPower;
     const gridDualAvailable = Boolean(
       (sensorMap.grid_import_power && this._numericPowerState(sensorMap.grid_import_power) !== null) ||
         (sensorMap.grid_export_power && this._numericPowerState(sensorMap.grid_export_power) !== null)
     );
     const batterySignedAvailable = Boolean(
-      sensorMap.battery_power && this._numericPowerState(sensorMap.battery_power) !== null
+      (sensorMap.battery_inverter_power &&
+        this._numericPowerState(sensorMap.battery_inverter_power) !== null) ||
+        (sensorMap.battery_power && this._numericPowerState(sensorMap.battery_power) !== null)
     );
     const batteryDualAvailable = Boolean(
       (sensorMap.battery_charge_power && this._numericPowerState(sensorMap.battery_charge_power) !== null) ||
@@ -6275,7 +6467,12 @@ class HaEnergyDashboardPanel extends HTMLElement {
         if (batteryMode === "signed" && (key === "battery_charge_power" || key === "battery_discharge_power")) {
           return false;
         }
-        if (batteryMode === "dual" && key === "battery_power") {
+        if (batteryMode === "signed" && batterySignedAvailable) {
+          if (key === "battery_inverter_power" || key === "battery_power") {
+            return false;
+          }
+        }
+        if (batteryMode === "dual" && (key === "battery_power" || key === "battery_inverter_power")) {
           return false;
         }
 
@@ -6289,13 +6486,27 @@ class HaEnergyDashboardPanel extends HTMLElement {
         if (gridMode === "auto" && !signedGridAvailable && hasGridDual && key === "grid_power") {
           return false;
         }
-        if (batteryMode === "auto" && !useSignedBattery && hasBatteryDual && key === "battery_power") {
+        if (
+          batteryMode === "auto" &&
+          !useSignedBattery &&
+          hasBatteryDual &&
+          (key === "battery_power" || key === "battery_inverter_power")
+        ) {
           return false;
         }
         if (
           batteryMode === "auto" &&
           useSignedBattery &&
           (key === "battery_charge_power" || key === "battery_discharge_power")
+        ) {
+          return false;
+        }
+        if (
+          batteryMode === "auto" &&
+          useSignedBattery &&
+          hasBatterySigned &&
+          batterySignedAvailable &&
+          (key === "battery_power" || key === "battery_inverter_power")
         ) {
           return false;
         }
@@ -7173,6 +7384,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const solar = this._numericPowerState(sensors.solar_power);
     const gridFlow = this._resolveGridFlow(sensors);
     const batteryFlow = this._resolveBatteryFlow(sensors, flowOpts);
+    const batteryDcFlow = this._resolveBatteryDcFlow(sensors, flowOpts);
     const loadTotal = this._resolveLoadPower(sensors.load_power, flowOpts, {
       solarPower: solar,
       gridSignedPower: gridFlow.signed,
@@ -7188,12 +7400,13 @@ class HaEnergyDashboardPanel extends HTMLElement {
     const batteryRuntime = this._batteryRuntimeEstimate({
       sensors,
       soc,
-      batteryDischarge,
+      batteryDischarge:
+        batteryDcFlow.dischargePower !== null ? batteryDcFlow.dischargePower : batteryDischarge,
     });
     const batteryChargeEta = this._batteryChargeEstimate({
       sensors,
       soc,
-      batteryCharge,
+      batteryCharge: batteryDcFlow.chargePower !== null ? batteryDcFlow.chargePower : batteryCharge,
     });
     const extraChips = this._extraChips().map((chip) => {
       const raw = this._numericPowerState(chip.entity);
@@ -9431,6 +9644,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">grid_import_energy</div><div class="v">${sensors.grid_import_energy || "-"}</div>
             <div class="k">grid_export_energy</div><div class="v">${sensors.grid_export_energy || "-"}</div>
             <div class="k">battery_power</div><div class="v">${sensors.battery_power}</div>
+            <div class="k">battery_inverter_power</div><div class="v">${sensors.battery_inverter_power || "-"}</div>
             <div class="k">battery_charge</div><div class="v">${sensors.battery_charge_power || "-"}</div>
             <div class="k">battery_discharge</div><div class="v">${sensors.battery_discharge_power || "-"}</div>
             <div class="k">load_power</div><div class="v">${sensors.load_power}</div>
@@ -9453,6 +9667,7 @@ class HaEnergyDashboardPanel extends HTMLElement {
             <div class="k">grid_source</div><div class="v">${gridFlow.mode}</div>
             <div class="k">grid_signed_source</div><div class="v">${gridFlow.signedSource || "-"}</div>
             <div class="k">battery_source</div><div class="v">${batteryFlow.mode}</div>
+            <div class="k">battery_signed_source</div><div class="v">${batteryFlow.signedSource || "-"}</div>
             <div class="k">cfg_use_signed_battery</div><div class="v">${flowOpts.useSignedBatteryPower ? "ja" : "nein"}</div>
             <div class="k">cfg_grid_mode</div><div class="v">${flowOpts.gridSensorMode}</div>
             <div class="k">cfg_battery_mode</div><div class="v">${flowOpts.batterySensorMode}</div>

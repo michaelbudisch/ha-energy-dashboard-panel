@@ -41,6 +41,7 @@ from .const import (
     CONF_BATTERY_CHARGE_POWER,
     CONF_BATTERY_DISCHARGE_POWER,
     CONF_BATTERY_SENSOR_MODE,
+    CONF_BATTERY_INVERTER_POWER,
     CONF_BATTERY_POWER,
     CONF_GRID_EXPORT_POWER,
     CONF_GRID_IMPORT_POWER,
@@ -1351,7 +1352,11 @@ class _LifetimeAccumulator:
 
     def _resolve_battery(self) -> tuple[float | None, float | None, float | None]:
         """Resolve battery flow from dual or signed sensors."""
-        signed = self._entity_num(self._sensors.get(CONF_BATTERY_POWER))
+        signed_candidates = (
+            self._entity_num(self._sensors.get(CONF_BATTERY_INVERTER_POWER)),
+            self._entity_num(self._sensors.get(CONF_BATTERY_POWER)),
+        )
+        signed = next((value for value in signed_candidates if value is not None), None)
         if signed is not None and self._invert_battery_power_sign:
             signed = -signed
         charge_raw = self._entity_num(self._sensors.get(CONF_BATTERY_CHARGE_POWER))
@@ -1369,6 +1374,14 @@ class _LifetimeAccumulator:
             charge_power = max(0.0, charge_raw or 0.0)
             discharge_power = max(0.0, discharge_raw or 0.0)
             return charge_power, discharge_power, discharge_power - charge_power
+
+        # Auto mode: prefer signed inverter flow when available (AC-side accuracy).
+        if (
+            self._battery_sensor_mode == "auto"
+            and self._sensors.get(CONF_BATTERY_INVERTER_POWER)
+            and signed is not None
+        ):
+            return max(0.0, -signed), max(0.0, signed), signed
 
         if self._use_signed_battery_power:
             if signed is None:

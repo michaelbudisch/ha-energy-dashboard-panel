@@ -10,6 +10,7 @@ Custom Panel fuer Home Assistant mit Fokus auf:
 - Standard-Chip Farben frei konfigurierbar (Solar/Netz/Batterie/Hauslast)
 - Light/Dark Mode Umschalter direkt im Dashboard
 - Tagesverlauf + Sparstatistiken + Monatsreport (Monat-Tab) + Lifetime-Sensoren
+- Optionaler Batterie-WR-Sensor (signed, AC-Seite) inkl. Verlustanzeige (Laden/Entladen)
 - Berichte (Monat/Jahr) als CSV/PDF direkt im Panel
 - Hover-Tooltips in den Charts (Maus ueber Diagramm = Live-Werte je Punkt)
 - Umschaltbarer Tagesverlauf: Linien/Balken + kW/kWh pro Intervall
@@ -82,6 +83,8 @@ energy_dashboard_panel:
     grid_import_energy: sensor.gesamtbezug_kwh
     grid_export_energy: sensor.gesamteinspeisung_kwh
     battery_power: sensor.batterie_leistung
+    # Optional (empfohlen): signed WR-Wirkleistung (AC-Seite) fuer genaueren Fluss
+    battery_inverter_power: sensor.wechselrichter_wirkleistung
     # Optional: kumulative Batterieenergie fuer exaktere Aufteilung:
     # battery_charge_energy: sensor.akkuladung_gesamt_kwh
     # battery_discharge_energy: sensor.akkuentladung_gesamt_kwh
@@ -137,6 +140,18 @@ Hinweis Akku-Prognose:
 - Restlaufzeit (Entladen) wird berechnet aus `SOC`, `battery_capacity_kwh`, `battery_reserve_soc` und aktueller Entladeleistung.
 - Ladezeit bis Ziel wird aus `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktueller Ladeleistung berechnet.
 - Falls `battery_capacity_kwh` fehlt, versucht das Panel die Kapazität aus Attributen von `battery_soc` zu lesen.
+
+Hinweis Batterie-WR Sensor und Verluste:
+
+- Optional kann `sensors.battery_inverter_power` gesetzt werden (signed, AC-Seite am Wechselrichter).
+- Wenn gesetzt, nutzt das Panel diesen Sensor vorrangig fuer Energiefluss/Bilanz (Haus/Netz/Akku).
+- `sensors.battery_power` bleibt zusaetzlich sinnvoll als DC-Seite (Batterie intern), damit
+  Lade-/Entlade-Verluste angezeigt werden koennen.
+- In der Batterie-Detailansicht erscheinen dann z. B.:
+  - `Wandlungsverlust`
+  - `Davon Laden`
+  - `Davon Entladen`
+  - `Wirkungsgrad Laden/Entladen`
 
 Berichte:
 
