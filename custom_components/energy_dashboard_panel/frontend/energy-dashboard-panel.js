@@ -132,7 +132,7 @@ const TREND_VALUE_MODES = {
   kwh: "kwh",
 };
 const TREND_STEP_MIN_MS = 15 * 60 * 1000;
-const TREND_DATA_REV = "2026-03-23-battery-inverter-loss-1";
+const TREND_DATA_REV = "2026-03-25-meter-spike-filter-1";
 
 const GRID_STATUS_ENTER_W = 80;
 const GRID_STATUS_EXIT_W = 50;
@@ -2723,6 +2723,41 @@ class HaEnergyDashboardPanel extends HTMLElement {
     return Math.max(0, delta);
   }
 
+  _counterPowerCapW(kind = "generic") {
+    switch (String(kind || "").toLowerCase()) {
+      case "solar":
+        return 50000;
+      case "battery":
+        return 50000;
+      case "grid":
+        return 80000;
+      case "load":
+        return 100000;
+      default:
+        return 80000;
+    }
+  }
+
+  _sanitizeCounterPower(counterPowerW, fallbackPowerW = null, kind = "generic") {
+    if (!Number.isFinite(counterPowerW)) {
+      return null;
+    }
+    const value = Math.max(0, Number(counterPowerW));
+    const hardCap = this._counterPowerCapW(kind);
+    if (value > hardCap) {
+      return null;
+    }
+    if (Number.isFinite(fallbackPowerW)) {
+      const fallback = Math.max(0, Number(fallbackPowerW));
+      // Allow drift between different sampling domains, but reject extreme jumps.
+      const dynamicCap = Math.max(fallback * 8 + 1500, fallback + 12000);
+      if (value > dynamicCap) {
+        return null;
+      }
+    }
+    return value;
+  }
+
   _formatPower(value) {
     if (value === null) {
       return "--";
@@ -4283,6 +4318,10 @@ class HaEnergyDashboardPanel extends HTMLElement {
 
       const solarRaw = solarRawHist === null ? null : solarRawHist * scaleSolar;
       const loadRaw = loadRawHist === null ? null : loadRawHist * scaleLoad;
+      const loadRawNormalized =
+        loadRaw === null
+          ? null
+          : Math.max(0, flowOpts.invertLoadPowerSign ? -loadRaw : loadRaw);
       const importDual = importDualHist === null ? null : importDualHist * scaleGridImport;
       const exportDual = exportDualHist === null ? null : exportDualHist * scaleGridExport;
       const signed = signedHist === null ? null : signedHist * scaleGridSigned;
@@ -4330,18 +4369,38 @@ class HaEnergyDashboardPanel extends HTMLElement {
       if (batteryDischargeMeterKwh !== null) {
         prevBatteryDischargeMeterKwh = batteryDischargeMeterKwh;
       }
-      const solarMeterPower =
+      const solarMeterPowerRaw =
         solarMeterDeltaKwh === null ? null : (solarMeterDeltaKwh * 1000) / stepHours;
-      const loadMeterPower =
+      const loadMeterPowerRaw =
         loadMeterDeltaKwh === null ? null : (loadMeterDeltaKwh * 1000) / stepHours;
-      const batteryChargeMeterPower =
+      const batteryChargeMeterPowerRaw =
         batteryChargeMeterDeltaKwh === null
           ? null
           : (batteryChargeMeterDeltaKwh * 1000) / stepHours;
-      const batteryDischargeMeterPower =
+      const batteryDischargeMeterPowerRaw =
         batteryDischargeMeterDeltaKwh === null
           ? null
           : (batteryDischargeMeterDeltaKwh * 1000) / stepHours;
+      const solarMeterPower = this._sanitizeCounterPower(
+        solarMeterPowerRaw,
+        solarRaw === null ? null : Math.max(0, solarRaw),
+        "solar"
+      );
+      const loadMeterPower = this._sanitizeCounterPower(
+        loadMeterPowerRaw,
+        loadRawNormalized,
+        "load"
+      );
+      const batteryChargeMeterPower = this._sanitizeCounterPower(
+        batteryChargeMeterPowerRaw,
+        chargeDual === null ? null : Math.max(0, chargeDual),
+        "battery"
+      );
+      const batteryDischargeMeterPower = this._sanitizeCounterPower(
+        batteryDischargeMeterPowerRaw,
+        dischargeDual === null ? null : Math.max(0, dischargeDual),
+        "battery"
+      );
       let solar =
         solarMeterPower === null
           ? solarRaw === null
@@ -4350,9 +4409,9 @@ class HaEnergyDashboardPanel extends HTMLElement {
           : Math.max(0, solarMeterPower);
       let load =
         loadMeterPower === null
-          ? loadRaw === null
+          ? loadRawNormalized === null
             ? null
-            : Math.max(0, flowOpts.invertLoadPowerSign ? -loadRaw : loadRaw)
+            : loadRawNormalized
           : Math.max(0, loadMeterPower);
 
       const gridFlow = this._resolveGridFlowValues(
@@ -4445,10 +4504,20 @@ class HaEnergyDashboardPanel extends HTMLElement {
       if (gridExportMeterKwh !== null) {
         prevGridExportMeterKwh = gridExportMeterKwh;
       }
-      const gridImportMeterPower =
+      const gridImportMeterPowerRaw =
         gridImportMeterDeltaKwh === null ? null : (gridImportMeterDeltaKwh * 1000) / stepHours;
-      const gridExportMeterPower =
+      const gridExportMeterPowerRaw =
         gridExportMeterDeltaKwh === null ? null : (gridExportMeterDeltaKwh * 1000) / stepHours;
+      const gridImportMeterPower = this._sanitizeCounterPower(
+        gridImportMeterPowerRaw,
+        gridImport === null ? null : Math.max(0, gridImport),
+        "grid"
+      );
+      const gridExportMeterPower = this._sanitizeCounterPower(
+        gridExportMeterPowerRaw,
+        gridFlow.exportPower === null ? null : Math.max(0, gridFlow.exportPower),
+        "grid"
+      );
       const signedGridFromEnergyMeters =
         gridImportMeterPower === null && gridExportMeterPower === null
           ? null
