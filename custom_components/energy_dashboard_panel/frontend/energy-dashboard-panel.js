@@ -921,6 +921,41 @@ class HaEnergyDashboardPanel extends HTMLElement {
       const batteryChargeLossKwh = integrateFieldKwh("batteryChargeLossPower", null);
       const batteryDischargeLossKwh = integrateFieldKwh("batteryDischargeLossPower", null);
       const batteryLossTotalKwh = Math.max(0, batteryChargeLossKwh + batteryDischargeLossKwh);
+      const sensors = this._sensors();
+      const panelCfg = this._panelConfig();
+      const capacityKwh = this._batteryCapacityKwh(sensors, panelCfg);
+      const reserveSocRaw = this._parseNumber(panelCfg?.battery_reserve_soc);
+      const reserveSoc = this._clamp(reserveSocRaw ?? 10, 0, 99);
+      const maxChargeSocRaw = this._parseNumber(panelCfg?.battery_max_charge_soc);
+      const maxChargeSoc = this._clamp(maxChargeSocRaw ?? 100, 1, 100);
+      const usableSocWindowPct = Math.max(0, maxChargeSoc - reserveSoc);
+      const usableWindowKwh =
+        capacityKwh === null || capacityKwh <= 0
+          ? null
+          : capacityKwh * (usableSocWindowPct / 100);
+      const chargeForCyclesKwh =
+        batteryChargeDcKwh > 0.0005 ? batteryChargeDcKwh : batteryChargeAcKwh;
+      const dischargeForCyclesKwh =
+        batteryDischargeDcKwh > 0.0005 ? batteryDischargeDcKwh : batteryDischargeAcKwh;
+      const cycleThroughputKwh = Math.max(0, chargeForCyclesKwh + dischargeForCyclesKwh);
+      const eqFullCycles =
+        usableWindowKwh !== null && usableWindowKwh > 0
+          ? cycleThroughputKwh / (2 * usableWindowKwh)
+          : null;
+      const closedFullCycles =
+        usableWindowKwh !== null && usableWindowKwh > 0
+          ? Math.min(chargeForCyclesKwh, dischargeForCyclesKwh) / usableWindowKwh
+          : null;
+      const batteryChargeTotalMeterKwh = this._entityEnergyKwh(sensors.battery_charge_energy);
+      const batteryDischargeTotalMeterKwh = this._entityEnergyKwh(sensors.battery_discharge_energy);
+      const lifetimeEqFullCycles =
+        usableWindowKwh !== null &&
+        usableWindowKwh > 0 &&
+        batteryChargeTotalMeterKwh !== null &&
+        batteryDischargeTotalMeterKwh !== null
+          ? Math.max(0, batteryChargeTotalMeterKwh + batteryDischargeTotalMeterKwh) /
+            (2 * usableWindowKwh)
+          : null;
       add("Entladen", this._formatEnergyKwh(posKwh));
       add("Davon im Haus verbraucht", this._formatEnergyKwh(batteryToHouseKwh));
       add("Laden", this._formatEnergyKwh(negKwh));
@@ -937,6 +972,14 @@ class HaEnergyDashboardPanel extends HTMLElement {
         const effDischargePct = this._clamp((batteryDischargeAcKwh / batteryDischargeDcKwh) * 100, 0, 100);
         add("Wirkungsgrad Entladen", this._formatPercent(effDischargePct));
       }
+      if (eqFullCycles !== null) {
+        add("Vollzyklen (Zeitraum, äquivalent)", eqFullCycles.toFixed(2));
+        add("Vollzyklen (Zeitraum, abgeschlossen)", closedFullCycles.toFixed(2));
+      }
+      add(
+        "Vollzyklen gesamt (Zähler)",
+        lifetimeEqFullCycles !== null ? lifetimeEqFullCycles.toFixed(1) : "--"
+      );
       add("Netto", `${netKwh >= 0 ? "+" : "-"}${this._formatEnergyKwh(Math.abs(netKwh))}`);
       add("Peak Entladen", this._formatPower(peakPos));
       add("Peak Laden", this._formatPower(-peakNeg));
@@ -2701,6 +2744,21 @@ class HaEnergyDashboardPanel extends HTMLElement {
     }
     const unit = this._stateObj(entityId)?.attributes?.unit_of_measurement;
     return this._energyToKwh(rawValue, unit, entityId);
+  }
+
+  _entityEnergyKwh(entityId) {
+    if (!entityId) {
+      return null;
+    }
+    const stateObj = this._stateObj(entityId);
+    if (!stateObj) {
+      return null;
+    }
+    const value = this._parseNumber(stateObj.state);
+    if (value === null) {
+      return null;
+    }
+    return this._energyToKwh(value, stateObj.attributes?.unit_of_measurement, entityId);
   }
 
   _counterDeltaKwh(prevKwh, nextKwh) {

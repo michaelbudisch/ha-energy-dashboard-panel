@@ -135,6 +135,13 @@ Hinweis Akku-Prognose:
 - Ladezeit bis Ziel nutzt `SOC`, `battery_capacity_kwh`, `battery_max_charge_soc` und aktuelle Ladeleistung.
 - Ohne `battery_capacity_kwh` wird versucht, die Kapazität aus `battery_soc`-Attributen zu lesen.
 
+Hinweis Akku-Zyklen:
+
+- `Vollzyklen (Zeitraum, ...)` in der Batterie-Detailansicht beziehen sich immer auf den gewählten Zeitraum (Heute, 24h, 7 Tage, Monat, Gesamt).
+- `Vollzyklen gesamt (Zähler)` zeigt Gesamtzyklen seit Aufzeichnung und braucht
+  `battery_charge_energy` und `battery_discharge_energy` als fortlaufende Zähler
+  (`state_class: total_increasing`, Einheit kWh).
+
 Hinweis Batterie-WR Sensor und Verluste:
 
 - Optional kann `sensors.battery_inverter_power` gesetzt werden (signed, AC-Seite am Wechselrichter).
